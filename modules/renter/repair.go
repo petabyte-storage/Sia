@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/NebulousLabs/Sia/build"
-	"github.com/NebulousLabs/Sia/modules"
+	"github.com/NebulousLabs/Sia/crypto"
 	"github.com/NebulousLabs/Sia/types"
 )
 
@@ -44,8 +44,8 @@ type (
 	// chunkID can be used to uniquely identify a chunk within the repair
 	// matrix.
 	chunkID struct {
-		index    uint64 // the index of the chunk within its file.
-		filename string
+		index     uint64 // the index of the chunk within its file.
+		masterkey crypto.TwofishKey
 	}
 
 	// repairState tracks a bunch of chunks that are being actively repaired.
@@ -99,15 +99,18 @@ func (cs *chunkStatus) numGaps(rs *repairState) int {
 	return pieceGaps
 }
 
-// addFileToRepairState will take a file and add each of the incomplete chunks
-// to the repair state, along with data about which pieces need attention.
-func (r *Renter) addFileToRepairState(rs *repairState, file *file) {
-	// Check that the file is being tracked, and therefor candidate for repair.
-	file.mu.Lock()
+// managedAddFileToRepairState will take a file and add each of the incomplete
+// chunks to the repair state, along with data about which pieces need
+// attention.
+func (r *Renter) managedAddFileToRepairState(rs *repairState, file *file) {
+	// Check that the file is being tracked, and therefore candidate for
+	// repair.
+	id := r.mu.RLock()
+	file.mu.RLock()
 	_, exists := r.tracking[file.name]
-	file.mu.Unlock()
+	file.mu.RUnlock()
+	r.mu.RUnlock(id)
 	if !exists {
-		// File is not being tracked, don't add it to the repair state.
 		return
 	}
 
@@ -131,7 +134,13 @@ func (r *Renter) addFileToRepairState(rs *repairState, file *file) {
 	}
 
 	// Iterate through each contract and figure out which pieces are available.
-	for _, contract := range file.contracts {
+	file.mu.RLock()
+	var fileContracts []fileContract
+	for _, c := range file.contracts {
+		fileContracts = append(fileContracts, c)
+	}
+	file.mu.RUnlock()
+	for _, contract := range fileContracts {
 		// Check whether this contract is offline. Even if the contract is
 		// offline, we want to record that the chunk has attempted to use this
 		// contract.
@@ -158,7 +167,7 @@ func (r *Renter) addFileToRepairState(rs *repairState, file *file) {
 		}
 
 		// Skip this chunk if it's already in the set of incomplete chunks.
-		cid := chunkID{i, file.name}
+		cid := chunkID{i, file.masterKey}
 		_, exists := rs.incompleteChunks[cid]
 		if exists {
 			continue
@@ -187,9 +196,7 @@ func (r *Renter) managedRepairIteration(rs *repairState) {
 		case <-r.tg.StopChan():
 			return
 		case file := <-r.newRepairs:
-			id := r.mu.Lock()
-			r.addFileToRepairState(rs, file)
-			r.mu.Unlock(id)
+			r.managedAddFileToRepairState(rs, file)
 			return
 		}
 	}
@@ -305,6 +312,42 @@ func (r *Renter) managedRepairIteration(rs *repairState) {
 	r.managedWaitOnRepairWork(rs)
 }
 
+// managedDownloadChunkData downloads the requested chunk from Sia, for use in
+// the repair loop.
+func (r *Renter) managedDownloadChunkData(rs *repairState, file *file, offset uint64, chunkIndex uint64, chunkID chunkID) ([]byte, error) {
+	rs.downloadingChunks[chunkID] = struct{}{}
+	defer delete(rs.downloadingChunks, chunkID)
+
+	downloadSize := file.chunkSize()
+	if offset+downloadSize > file.size {
+		downloadSize = file.size - offset
+	}
+
+	// create a DownloadBufferWriter for the chunk
+	buf := NewDownloadBufferWriter(file.chunkSize(), int64(offset))
+
+	// create the download object and push it on to the download queue
+	d := r.newSectionDownload(file, buf, offset, downloadSize)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case r.newDownloads <- d:
+		case <-done:
+		}
+	}()
+
+	// wait for the download to complete and return the data
+	select {
+	case <-d.downloadFinished:
+		return buf.Bytes(), d.Err()
+	case <-r.tg.StopChan():
+		return nil, errors.New("chunk download interrupted by shutdown")
+	case <-time.After(chunkDownloadTimeout):
+		return nil, errors.New("chunk download timed out")
+	}
+}
+
 // managedGetChunkData grabs the requested `chunkID` from the file, in order to
 // repair the file. If the `trackedFile` can be found on disk, grab the chunk
 // from the file, otherwise attempt to queue a new download for only that chunk
@@ -317,39 +360,7 @@ func (r *Renter) managedGetChunkData(rs *repairState, file *file, trackedFile tr
 	f, err := os.Open(trackedFile.RepairPath)
 	if err != nil {
 		// if that fails, try to download the chunk
-		// mark the chunk as being downloaded
-		rs.downloadingChunks[chunkID] = struct{}{}
-		defer delete(rs.downloadingChunks, chunkID)
-
-		// build current contracts map
-		currentContracts := make(map[modules.NetAddress]types.FileContractID)
-		for _, contract := range r.hostContractor.Contracts() {
-			currentContracts[contract.NetAddress] = contract.ID
-		}
-
-		downloadSize := file.chunkSize()
-		if offset+downloadSize > file.size {
-			downloadSize = file.size - offset
-		}
-
-		// create a DownloadBufferWriter for the chunk
-		buf := NewDownloadBufferWriter(file.chunkSize())
-
-		// create the download object and push it on to the download queue
-		d := r.newSectionDownload(file, buf, currentContracts, offset, downloadSize)
-		go func() {
-			r.newDownloads <- d
-		}()
-
-		// wait for the download to complete and return the data
-		select {
-		case <-d.downloadFinished:
-			return buf.Bytes(), d.Err()
-		case <-r.tg.StopChan():
-			return nil, errors.New("chunk download interrupted by shutdown")
-		case <-time.After(chunkDownloadTimeout):
-			return nil, errors.New("chunk download timed out")
-		}
+		return r.managedDownloadChunkData(rs, file, offset, chunkIndex, chunkID)
 	}
 	defer f.Close()
 
@@ -371,12 +382,21 @@ func (r *Renter) managedGetChunkData(rs *repairState, file *file, trackedFile tr
 // chunk using the chunk state and a list of workers.
 func (r *Renter) managedScheduleChunkRepair(rs *repairState, chunkID chunkID, chunkStatus *chunkStatus, usefulWorkers []types.FileContractID) error {
 	// Check that the file is still in the renter.
-	filename := chunkID.filename
 	id := r.mu.RLock()
-	file, exists1 := r.files[filename]
-	meta, exists2 := r.tracking[filename]
+	var file *file
+	for _, f := range r.files {
+		if f.masterKey == chunkID.masterkey {
+			file = f
+			break
+		}
+	}
+	var meta trackedFile
+	var exists bool
+	if file != nil {
+		meta, exists = r.tracking[file.name]
+	}
 	r.mu.RUnlock(id)
-	if !exists1 || !exists2 {
+	if !exists {
 		return errFileDeleted
 	}
 
@@ -473,9 +493,7 @@ func (r *Renter) managedWaitOnRepairWork(rs *repairState) {
 	select {
 	case finishedUpload = <-rs.resultChan:
 	case file := <-r.newRepairs:
-		id := r.mu.Lock()
-		r.addFileToRepairState(rs, file)
-		r.mu.Unlock(id)
+		r.managedAddFileToRepairState(rs, file)
 		return
 	case <-r.tg.StopChan():
 		return
@@ -522,7 +540,10 @@ func (r *Renter) threadedQueueRepairs() {
 		id := r.mu.RLock()
 		var files []*file
 		for _, file := range r.files {
-			files = append(files, file)
+			if _, ok := r.tracking[file.name]; ok {
+				// Only repair files that are being tracked.
+				files = append(files, file)
+			}
 		}
 		r.mu.RUnlock(id)
 

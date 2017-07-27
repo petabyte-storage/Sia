@@ -5,6 +5,8 @@ import (
 
 	"github.com/NebulousLabs/Sia/api"
 
+	"net/url"
+
 	"github.com/spf13/cobra"
 )
 
@@ -75,7 +77,13 @@ Pool Hashrate: %v GH/s
 Blocks Mined: %d
 
 Pool config:
-Operator Wallet:	%s`, poolStr, status.PoolHashrate/1000000000, status.BlocksMined, config.OperatorWallet)
+Pool Name:              %s
+Pool Accepting Shares   %t
+Pool Stratum Port       %d
+Operator Percentage     %.02f %%
+Operator Wallet:        %s`,
+		poolStr, status.PoolHashrate/1000000000, status.BlocksMined,
+		config.Name, config.AcceptingShares, config.NetworkPort, config.OperatorPercentage, config.OperatorWallet)
 }
 
 // poolstopcmd is the handler for the command `siac pool stop`.
@@ -93,12 +101,16 @@ func poolconfigcmd(param, value string) {
 	var err error
 	switch param {
 	case "operatorwallet":
-		err = post("/pool/config", param+"="+value)
-		if err != nil {
-			die("Could not update pool settings:", err)
-
-		}
+	case "name":
+	case "operatorpercentage":
+	case "acceptingshares":
+	case "networkport":
 	default:
 		die("Unknown pool config parameter: ", param)
+	}
+	err = post("/pool/config", param+"="+url.PathEscape(value))
+	if err != nil {
+		die("Could not update pool settings:", err)
+
 	}
 }

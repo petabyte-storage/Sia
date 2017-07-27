@@ -62,11 +62,11 @@ func (mp *Pool) persistData() persistence {
 func (mp *Pool) establishDefaults() error {
 	// Configure the settings object.
 	mp.settings = modules.PoolInternalSettings{
-		AcceptingShares:     false,
-		PoolOwnerPercentage: 0.0,
-		PoolOperatorWallet:  types.UnlockHash{},
-
-		PoolNetworkPort: 0,
+		PoolName:               "",
+		AcceptingShares:        false,
+		PoolOperatorPercentage: 0.0,
+		PoolOperatorWallet:     types.UnlockHash{},
+		PoolNetworkPort:        3333,
 	}
 
 	return nil

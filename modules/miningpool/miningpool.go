@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
-	"strconv"
 	"sync"
 	"time"
 
@@ -354,7 +353,7 @@ func newPool(dependencies dependencies, cs modules.ConsensusSet, tpool modules.T
 	p.dispatcher = &Dispatcher{handlers: make(map[string]*Handler), mu: sync.RWMutex{}, p: p}
 	// la := modules.NetAddress(listenerAddress)
 	// p.dispatcher.ListenHandlers(la.Port())
-	port := strconv.Itoa(3333)
+	port := fmt.Sprintf("%d", p.InternalSettings().PoolNetworkPort)
 	go p.dispatcher.ListenHandlers(port) // This will become a persistent config option
 	p.tg.OnStop(func() {
 		p.dispatcher.ln.Close()

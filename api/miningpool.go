@@ -4,21 +4,28 @@ import (
 	"fmt"
 	"net/http"
 
+	"net/url"
+
 	"github.com/NebulousLabs/Sia/modules"
 	"github.com/NebulousLabs/Sia/types"
 	"github.com/julienschmidt/httprouter"
 )
 
 type (
-	// PoolGET contains the information that is returned after a GET request
+	// PoolGET contains the stats that is returned after a GET request
 	// to /pool.
 	PoolGET struct {
 		PoolRunning  bool `json:"poolrunning"`
 		BlocksMined  int  `json:"blocksmined"`
 		PoolHashrate int  `json:"cpuhashrate"`
 	}
+	// PoolConfigGET contains the parameters you can set to config your pool
 	PoolConfigGET struct {
-		OperatorWallet types.UnlockHash `json:"opertorwallet"`
+		AcceptingShares    bool             `json:"acceptingshares"`
+		OperatorPercentage float32          `json:"operatorpercentage"`
+		NetworkPort        uint16           `json:"networkport"`
+		Name               string           `json:"name"`
+		OperatorWallet     types.UnlockHash `json:"operatorwallet"`
 	}
 )
 
@@ -56,7 +63,11 @@ func (api *API) poolConfigHandler(w http.ResponseWriter, req *http.Request, _ ht
 		return
 	}
 	pg := PoolConfigGET{
-		OperatorWallet: settings.PoolOperatorWallet,
+		Name:               settings.PoolName,
+		AcceptingShares:    settings.AcceptingShares,
+		OperatorPercentage: settings.PoolOperatorPercentage,
+		NetworkPort:        settings.PoolNetworkPort,
+		OperatorWallet:     settings.PoolOperatorWallet,
 	}
 	WriteJSON(w, pg)
 }
@@ -76,6 +87,45 @@ func (api *API) parsePoolSettings(req *http.Request) (modules.PoolInternalSettin
 		}
 		settings.PoolOperatorWallet = x
 	}
+	if req.FormValue("acceptingshares") != "" {
+		var x bool
+		_, err := fmt.Sscan(req.FormValue("acceptingshares"), &x)
+		if err != nil {
+			return modules.PoolInternalSettings{}, nil
+		}
+		settings.AcceptingShares = x
+	}
+	if req.FormValue("operatorpercentage") != "" {
+		var x float32
+		_, err := fmt.Sscan(req.FormValue("operatorpercentage"), &x)
+		if err != nil {
+			return modules.PoolInternalSettings{}, nil
+		}
+		settings.PoolOperatorPercentage = x
+
+	}
+	if req.FormValue("networkport") != "" {
+		var x uint16
+		_, err := fmt.Sscan(req.FormValue("networkport"), &x)
+		if err != nil {
+			return modules.PoolInternalSettings{}, nil
+		}
+		settings.PoolNetworkPort = x
+
+	}
+	if req.FormValue("name") != "" {
+		var x string
+		_, err := fmt.Sscan(req.FormValue("name"), &x)
+		if err != nil {
+			return modules.PoolInternalSettings{}, nil
+		}
+		settings.PoolName, err = url.PathUnescape(x)
+		if err != nil {
+			return modules.PoolInternalSettings{}, nil
+		}
+
+	}
+
 	return settings, nil
 }
 

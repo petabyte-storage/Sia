@@ -112,16 +112,7 @@ func (api *API) parsePoolSettings(req *http.Request) (modules.PoolInternalSettin
 
 	}
 	if req.FormValue("name") != "" {
-		var x string
-		_, err := fmt.Sscan(req.FormValue("name"), &x)
-		if err != nil {
-			return modules.PoolInternalSettings{}, nil
-		}
 		settings.PoolName = req.FormValue("name")
-		if err != nil {
-			return modules.PoolInternalSettings{}, nil
-		}
-
 	}
 
 	return settings, nil

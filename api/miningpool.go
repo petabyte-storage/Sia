@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"net/url"
-
 	"github.com/NebulousLabs/Sia/modules"
 	"github.com/NebulousLabs/Sia/types"
 	"github.com/julienschmidt/httprouter"
@@ -114,16 +112,7 @@ func (api *API) parsePoolSettings(req *http.Request) (modules.PoolInternalSettin
 
 	}
 	if req.FormValue("name") != "" {
-		var x string
-		_, err := fmt.Sscan(req.FormValue("name"), &x)
-		if err != nil {
-			return modules.PoolInternalSettings{}, nil
-		}
-		settings.PoolName, err = url.PathUnescape(x)
-		if err != nil {
-			return modules.PoolInternalSettings{}, nil
-		}
-
+		settings.PoolName = req.FormValue("name")
 	}
 
 	return settings, nil

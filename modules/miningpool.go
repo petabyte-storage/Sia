@@ -18,10 +18,11 @@ type (
 
 	// PoolInternalSettings contains a list of settings that can be changed.
 	PoolInternalSettings struct {
-		AcceptingShares     bool             `json:"acceptingshares"`
-		PoolOwnerPercentage float32          `json:"poolownerpercentage"`
-		PoolNetworkPort     uint16           `json:"poolnetworkport"`
-		PoolOperatorWallet  types.UnlockHash `json:"pooloperatorwallet"`
+		AcceptingShares        bool             `json:"acceptingshares"`
+		PoolOperatorPercentage float32          `json:"operatorpercentage"`
+		PoolNetworkPort        uint16           `json:"networkport"`
+		PoolName               string           `json:"name"`
+		PoolOperatorWallet     types.UnlockHash `json:"operatorwallet"`
 	}
 
 	// PoolWorkingStatus reports the working state of a pool. Can be one of

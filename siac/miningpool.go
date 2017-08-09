@@ -24,7 +24,11 @@ var (
 		Long: `Read/Modify pool settings.
 
 Available settings:
-     operatorwallet:   sia wallet address
+    name:               Name you select for your pool
+    acceptingshares:    Is your pool accepting shares
+    networkport:        Stratum port for your pool
+    operatorpercentage: What percentage of the block reward goes to the pool operator
+    operatorwallet:     Pool operator sia wallet address
  `,
 		Run: wrap(poolconfigcmd),
 	}
@@ -62,7 +66,7 @@ func poolcmd() {
 	if err != nil {
 		die("Could not get pool status:", err)
 	}
-	config := new(api.PoolConfigGET)
+	config := new(api.PoolConfig)
 	err = getAPI("/pool/config", config)
 	if err != nil {
 		die("Could not get pool config:", err)

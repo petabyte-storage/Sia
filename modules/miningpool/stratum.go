@@ -2,25 +2,38 @@ package pool
 
 import (
 	"bytes"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/NebulousLabs/Sia/crypto"
+	"github.com/NebulousLabs/Sia/encoding"
+	"github.com/NebulousLabs/Sia/modules"
+	"github.com/NebulousLabs/Sia/types"
 )
 
-// StratumMsg contains stratum messages over TCP
+const (
+	extraNonce2Size = 4
+)
+
+// StratumRequestMsg contains stratum request messages received over TCP
 type StratumRequestMsg struct {
 	ID     int             `json:"id"`
 	Method string          `json:"method"`
 	Params json.RawMessage `json:"params"`
 }
 
+// StratumResponseMsg contains stratum response messages sent over TCP
 type StratumResponseMsg struct {
 	ID     int             `json:"id"`
 	Result json.RawMessage `json:"result"`
@@ -32,6 +45,7 @@ type Handler struct {
 	conn   net.Conn
 	closed chan bool
 	p      *Pool
+	s      *Session
 }
 
 // Listen listens on a connection for incoming data and acts on it
@@ -46,6 +60,8 @@ func (h *Handler) Listen() { // listen connection for incomming data
 	defer h.p.tg.Done()
 
 	h.p.log.Println("New connection from " + h.conn.RemoteAddr().String())
+	h.s, _ = newSession(h.p)
+	h.p.log.Println("New sessioon: " + sPrintID(h.s.SessionID))
 	dec := json.NewDecoder(h.conn)
 	for {
 		var m StratumRequestMsg
@@ -71,6 +87,8 @@ func (h *Handler) Listen() { // listen connection for incomming data
 			h.sendStratumNotify()
 		case "mining.extranonce.subscribe":
 			h.handleStratumNonceSubscribe(m)
+		case "mining.submit":
+			h.handleStratumSubmit(m)
 		default:
 			h.p.log.Debugln("Unknown stratum method: ", m.Method)
 		}
@@ -111,30 +129,61 @@ func (h *Handler) sendRequest(r StratumRequestMsg) {
 //
 // TODO: Pull the appropriate data from either in memory or persistent store as required
 func (h *Handler) handleStratumSubscribe(m StratumRequestMsg) {
-	h.p.log.Debugln("ID = "+strconv.Itoa(m.ID)+", Method = "+m.Method+", params = ", m.Params)
-
 	r := StratumResponseMsg{ID: m.ID}
 
-	diff := fmt.Sprintf(`"mining.set_difficulty", "%s"`, "b4b6693b72a50c7116db18d6497cac52")
-	notify := fmt.Sprintf(`"mining.notify", "%s"`, "ae6812eb4cd7735a302a8a9dd95cf71f")
-	extranonse1 := "08000002"
-	extranonse2 := 4
-	raw := fmt.Sprintf(`[ [ [%s], [%s]], "%s", %d]`, diff, notify, extranonse1, extranonse2)
+	//	diff := "b4b6693b72a50c7116db18d6497cac52"
+	t, _ := h.p.persist.Target.Difficulty().Uint64()
+	tb := make([]byte, 8)
+	binary.LittleEndian.PutUint64(tb, t)
+	diff := hex.EncodeToString(tb)
+	notify := "ae6812eb4cd7735a302a8a9dd95cf71f"
+	extranonce1 := h.s.printNonce()
+	extranonce2 := extraNonce2Size
+	raw := fmt.Sprintf(`[ [ ["mining.set_difficulty", "%s"], ["mining.notify", "%s"]], "%s", %d]`, diff, notify, extranonce1, extranonce2)
 	r.Result = json.RawMessage(raw)
 	r.Error = json.RawMessage(`null`)
-	// {"id": 1, "result": [ [ ["mining.set_difficulty", "b4b6693b72a50c7116db18d6497cac52"], ["mining.notify", "ae6812eb4cd7735a302a8a9dd95cf71f"]], "08000002", 4], "error": null}\n
 	h.sendResponse(r)
 }
 
 // handleStratumAuthorize allows the pool to tie the miner connection to a particular user or wallet
 //
-// TODO: THis has to tie to either a connection specific record, or relate to a backend user, worker, password store
+// TODO: This has to tie to either a connection specific record, or relate to a backend user, worker, password store
 func (h *Handler) handleStatumAuthorize(m StratumRequestMsg) {
-	h.p.log.Debugln("ID = "+strconv.Itoa(m.ID)+", Method = "+m.Method+", params = ", m.Params)
-
+	type params [2]string
 	r := StratumResponseMsg{ID: m.ID}
+
 	r.Result = json.RawMessage(`true`)
 	r.Error = json.RawMessage(`null`)
+	var p params
+	switch m.Method {
+	case "mining.authorize":
+		//		p := new([]params)
+		err := json.Unmarshal(m.Params, &p)
+		if err != nil {
+			h.p.log.Printf("Unable to parse mining.authorize params: %v\n", err)
+			r.Result = json.RawMessage(`false`)
+		}
+		client := p[0]
+		worker := ""
+		if strings.Contains(p[0], "./_") {
+			s := strings.SplitN(p[0], "./_", 2)
+			client = s[0]
+			worker = s[1]
+		}
+		c := findClient(h.p, client)
+		if c == nil {
+			c, _ = newClient(h.p)
+		}
+		if c.Workers[worker] == nil {
+			c.Workers[worker], _ = newWorker(c, worker)
+		}
+		h.p.log.Debugln("client = " + client + ", worker = " + worker)
+		h.s.addClient(c)
+		// TODO: figure out how to store this worker - probably in Session
+	default:
+		h.p.log.Debugln("Unknown stratum method: ", m.Method)
+		r.Result = json.RawMessage(`false`)
+	}
 
 	h.sendResponse(r)
 }
@@ -153,21 +202,71 @@ func (h *Handler) handleStratumNonceSubscribe(m StratumRequestMsg) {
 
 }
 
+func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
+	var p [5]string
+	r := StratumResponseMsg{ID: m.ID}
+	r.Result = json.RawMessage(`true`)
+	r.Error = json.RawMessage(`null`)
+	err := json.Unmarshal(m.Params, &p)
+	if err != nil {
+		h.p.log.Printf("Unable to parse mining.submit params: %v\n", err)
+		r.Result = json.RawMessage(`false`)
+	}
+	name := p[0]
+	var jobID uint64
+	fmt.Sscanf(p[1], "%x", &jobID)
+	extraNonce2 := p[2]
+	nTime := p[3]
+	nonce := p[4]
+	h.p.log.Debugln("name = " + name + ", jobID = " + fmt.Sprint(jobID) + ", extraNonce2 = " + extraNonce2 + ", nTime = " + nTime + ", nonce = " + nonce)
+	if h.s.CurrentJob.JobID != jobID {
+		r.Result = json.RawMessage(`false`)
+		r.Error = json.RawMessage(`Stale`)
+	}
+	b := h.p.sourceBlock
+	bhNonce, err := hex.DecodeString(nonce)
+	for i := range b.Nonce { // there has to be a better way to do this in golang
+		b.Nonce[i] = bhNonce[i]
+	}
+	tb, _ := hex.DecodeString(nTime)
+	b.Timestamp = types.Timestamp(encoding.DecUint64(tb))
+
+	coinb1 := h.p.coinB1()
+	ex1, _ := hex.DecodeString(h.s.printNonce())
+	ex2, _ := hex.DecodeString(extraNonce2)
+	coinb2, _ := hex.DecodeString(h.p.coinB2())
+	coinbaseBytes := make([]byte, len(coinb1)+len(ex1)+len(ex2)+len(coinb2))
+	coinbaseBytes = append(coinbaseBytes, coinb1...)
+	coinbaseBytes = append(coinbaseBytes, ex1...)
+	coinbaseBytes = append(coinbaseBytes, ex2...)
+	coinbaseBytes = append(coinbaseBytes, coinb2...)
+	coinbaseTxn := types.Transaction{
+		ArbitraryData: [][]byte{coinbaseBytes},
+	}
+	b.Transactions = append([]types.Transaction{coinbaseTxn}, b.Transactions...)
+	h.p.log.Debugf("MerkleRoot is %v\n", b.MerkleRoot())
+	h.p.log.Debugf("BH hash is %v\n", b.ID())
+	h.p.log.Debugf("Target is  %064x\n", h.p.persist.Target.Int())
+	err = h.p.managedSubmitBlock(*b)
+	if err != nil {
+		h.p.log.Printf("Failed to SubmitBlock(): %v\n", err)
+		r.Result = json.RawMessage(`false`)
+
+	}
+
+	h.sendResponse(r)
+
+}
 func (h *Handler) sendStratumNotify() {
 	var r StratumRequestMsg
 	r.Method = "mining.notify"
 	r.ID = 1 // assuming this ID is the response to the original subscribe which appears to be a 1
-	bh, target, err := h.p.HeaderForWork()
+	bh, _, err := h.p.HeaderForWork()
 	if err != nil {
 		h.p.log.Println("Error getting header for work: ", err)
 		return
 	}
-	h.p.log.Println("BH->ParentID: ", bh.ParentID)
-	h.p.log.Println("BH->Nonce: ", bh.Nonce)
-	h.p.log.Println("BH->Timestamp: ", bh.Timestamp)
-	h.p.log.Println("BH->MerkleRoot: ", bh.MerkleRoot)
-	h.p.log.Println("Target: ", target)
-	fmt.Println(target)
+
 	branch1 := crypto.NewTree()
 	var buf bytes.Buffer
 	for _, payout := range h.p.sourceBlock.MinerPayouts {
@@ -182,25 +281,31 @@ func (h *Handler) sendStratumNotify() {
 		branch2.Push(buf.Bytes())
 		buf.Reset()
 	}
-	merkleBranch := fmt.Sprintf(`%s", "%s`, branch1.Root().String(), branch2.Root().String())
-	jobid := "bf"
-	prevhash := bh.ParentID
-	//"000000000000052714f51ebea73d6310db96d54a8399c5802e42508ea2486717"
-	coinb1 := "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000020000000000000004e6f6e536961000000000000000000000000000000000000"
-	coinb2 := "0000000000000000"
-	//	merkleBranch := `356464cda3f7a83a350aeb3ae5101ff56799cd68ad48b475426141540876bd31", "9cb176ec5b06898ef40f0e73242e0b0ff9d34ece67a241d529f2c18c67c73803`
+
+	job, _ := newJob(h.p)
+	h.s.addJob(job)
+
+	// b1m, _ := branch1.Root().MarshalJSON()
+	// b2m, _ := branch2.Root().MarshalJSON()
+	// merkleBranch := fmt.Sprintf(`%s, %s`, string(b1m), string(b2m))
+	b1m, _ := bh.MerkleRoot.MarshalJSON()
+	merkleBranch := string(b1m)
+	jobid := job.printID()
+
+	bpm, _ := bh.ParentID.MarshalJSON()
+
 	version := ""
+
 	nbits := "1a08645a"
-	ntime := fmt.Sprintf("%016x", bh.Timestamp<<32)
-	//"58258e5700000000"
+
+	buf.Reset()
+	encoding.WriteUint64(&buf, uint64(bh.Timestamp))
+	ntime := hex.EncodeToString(buf.Bytes())
+
 	cleanJobs := false
-	raw := fmt.Sprintf(`[ "%s", "%s", "%s", "%s", ["%s"], "%s", "%s", "%s", %t ]`,
-		jobid, prevhash, coinb1, coinb2, merkleBranch, version, nbits, ntime, cleanJobs)
+	raw := fmt.Sprintf(`[ "%s", %s, "%s", "%s", [%s], "%s", "%s", "%s", %t ]`,
+		jobid, string(bpm), h.p.coinB1Txn(), h.p.coinB2(), merkleBranch, version, nbits, ntime, cleanJobs)
 	r.Params = json.RawMessage(raw)
-	// {"params": ["bf", "4d16b6f85af6e2198f44ae2a6de67f78487ae5611b77c6c0440b921e00000000",
-	//"01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff20020862062f503253482f04b8864e5008",
-	//"072f736c7573682f000000000100f2052a010000001976a914d23fcdf86f7e756a64a7a9688ef9903327048ed988ac00000000", [],
-	//"00000002", "1c2ac4af", "504e86b9", false], "id": null, "method": "mining.notify"}
 	h.sendRequest(r)
 }
 
@@ -215,7 +320,7 @@ type Dispatcher struct {
 //AddHandler connects the incoming connection to the handler which will handle it
 func (d *Dispatcher) AddHandler(conn net.Conn) {
 	addr := conn.RemoteAddr().String()
-	handler := &Handler{conn, make(chan bool, 1), d.p}
+	handler := &Handler{conn, make(chan bool, 1), d.p, nil}
 	d.mu.Lock()
 	d.handlers[addr] = handler
 	d.mu.Unlock()
@@ -269,7 +374,40 @@ func (d *Dispatcher) ListenHandlers(port string) {
 	}
 }
 
-// func main() {
-//     dispatcher := &Dispatcher{make(map[string]*Handler)}
-//     dispatcher.ListenHandlers(3000)
-// }
+// newStratumID returns a function pointer to a unique ID generator used
+// for more the unique IDs within the Stratum protocol
+func (p *Pool) newStratumID() (f func() uint64) {
+	i := rand.Uint64()
+	f = func() uint64 {
+		atomic.AddUint64(&i, 1)
+		return i
+	}
+	return
+}
+
+func sPrintID(id uint64) string {
+	return fmt.Sprintf("%016x", id)
+}
+
+func (p *Pool) coinB1() []byte {
+	s := fmt.Sprintf("\000     %s     \000", p.InternalSettings().PoolName)
+	if ((len(modules.PrefixNonSia[:]) + len(s)) % 2) != 0 {
+		// odd length, add extra null
+		s = s + "\000"
+	}
+	//	cb := make([]byte, len(modules.PrefixNonSia[:])+len(s))
+	return append(modules.PrefixNonSia[:], s...)
+}
+
+func (p *Pool) coinB1Txn() string {
+	coinbaseTxn := types.Transaction{
+		ArbitraryData: [][]byte{p.coinB1()},
+	}
+	buf := new(bytes.Buffer)
+	coinbaseTxn.MarshalSia(buf)
+	return hex.EncodeToString(buf.Bytes())
+}
+
+func (p *Pool) coinB2() string {
+	return "00000000"
+}

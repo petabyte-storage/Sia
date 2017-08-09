@@ -1,6 +1,10 @@
 package modules
 
-import "github.com/NebulousLabs/Sia/types"
+import (
+	"time"
+
+	"github.com/NebulousLabs/Sia/types"
+)
 
 const (
 	// PoolDir names the directory that contains the pool persistence.
@@ -25,6 +29,17 @@ type (
 		PoolOperatorWallet     types.UnlockHash `json:"operatorwallet"`
 	}
 
+	PoolClients struct {
+		ClientName  string        `json:"clientname"`
+		BlocksMined uint64        `json:"blocksminer"`
+		Workers     []PoolWorkers `json:"workers"`
+	}
+
+	PoolWorkers struct {
+		WorkerName    string    `json:"workername"`
+		LastShareTime time.Time `json:"lastsharetime"`
+	}
+
 	// PoolWorkingStatus reports the working state of a pool. Can be one of
 	// "starting", "accepting", or "not accepting".
 	PoolWorkingStatus string
@@ -47,6 +62,9 @@ type (
 
 		// SetInternalSettings sets the parameters of the pool.
 		SetInternalSettings(PoolInternalSettings) error
+
+		// ClientData returns a pointer to the client list
+		ClientData() []PoolClients
 
 		// Close closes the Pool.
 		Close() error

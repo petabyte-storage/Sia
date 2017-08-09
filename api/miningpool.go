@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/NebulousLabs/Sia/modules"
 	"github.com/NebulousLabs/Sia/types"
@@ -15,15 +16,29 @@ type (
 	PoolGET struct {
 		PoolRunning  bool `json:"poolrunning"`
 		BlocksMined  int  `json:"blocksmined"`
-		PoolHashrate int  `json:"cpuhashrate"`
+		PoolHashrate int  `json:"poolhashrate"`
 	}
-	// PoolConfigGET contains the parameters you can set to config your pool
-	PoolConfigGET struct {
+	// PoolConfig contains the parameters you can set to config your pool
+	PoolConfig struct {
 		AcceptingShares    bool             `json:"acceptingshares"`
 		OperatorPercentage float32          `json:"operatorpercentage"`
 		NetworkPort        uint16           `json:"networkport"`
 		Name               string           `json:"name"`
 		OperatorWallet     types.UnlockHash `json:"operatorwallet"`
+	}
+	PoolClientsInfo struct {
+		NumberOfClients uint64           `json:"numberofclients"`
+		NumberOfWorkers uint64           `json:"numberofworkers"`
+		Clients         []PoolClientInfo `json:"clientnames"`
+	}
+	PoolClientInfo struct {
+		ClientName  string           `json:"clientname"`
+		BlocksMined uint64           `json:"blocksminer"`
+		Workers     []PoolWorkerInfo `json:"workers"`
+	}
+	PoolWorkerInfo struct {
+		WorkerName    string    `json:"workername"`
+		LastShareTime time.Time `json:"lastsharetime"`
 	}
 )
 
@@ -60,7 +75,7 @@ func (api *API) poolConfigHandler(w http.ResponseWriter, req *http.Request, _ ht
 		WriteError(w, Error{"error parsing pool settings: " + err.Error()}, http.StatusBadRequest)
 		return
 	}
-	pg := PoolConfigGET{
+	pg := PoolConfig{
 		Name:               settings.PoolName,
 		AcceptingShares:    settings.AcceptingShares,
 		OperatorPercentage: settings.PoolOperatorPercentage,
@@ -116,6 +131,13 @@ func (api *API) parsePoolSettings(req *http.Request) (modules.PoolInternalSettin
 	}
 
 	return settings, nil
+}
+
+func (api *API) poolGetClientsInfo(w http.ResponseWriter, req *http.Request, _ httprouter.Params) {
+	//	pc := PoolClientsInfo{}
+}
+
+func (api *API) poolGetClientInfo(w http.ResponseWriter, req *http.Request, _ httprouter.Params) {
 }
 
 // poolStartHandler handles the API call that starts the pool.

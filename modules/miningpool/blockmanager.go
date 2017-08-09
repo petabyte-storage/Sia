@@ -96,7 +96,7 @@ func (p *Pool) HeaderForWork() (types.BlockHeader, types.Target, error) {
 	// This typically only happens if the pool has just turned on after being
 	// off for a while. If the current block has been used for too many
 	// requests, fetch a new source block.
-	if time.Since(p.sourceBlockTime) > MaxSourceBlockAge || p.memProgress%(HeaderMemory/BlockMemory) == 0 || p.sourceBlockTime.IsZero() {
+	if time.Since(p.sourceBlockTime) > MaxSourceBlockAge || p.memProgress%(HeaderMemory/BlockMemory) == 0 {
 		p.newSourceBlock()
 	}
 

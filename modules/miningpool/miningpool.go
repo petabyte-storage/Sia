@@ -166,6 +166,7 @@ type Pool struct {
 	target            types.Target
 	address           types.UnlockHash
 	unsolvedBlock     types.Block
+	clients           map[string]*Client
 	// Pool transient fields - these fields are either determined at startup or
 	// otherwise are not critical to always be correct.
 	autoAddress          modules.NetAddress // Determined using automatic tooling in network.go
@@ -271,6 +272,7 @@ func newPool(dependencies dependencies, cs modules.ConsensusSet, tpool modules.T
 		arbDataMem:   make(map[types.BlockHeader][crypto.EntropySize]byte),
 		headerMem:    make([]types.BlockHeader, HeaderMemory),
 
+		clients:   make(map[string]*Client),
 		fullSets:  make(map[modules.TransactionSetID][]int),
 		splitSets: make(map[splitSetID]*splitSet),
 		blockMapHeap: &mapHeap{
@@ -458,17 +460,29 @@ func (p *Pool) InternalSettings() modules.PoolInternalSettings {
 	return p.settings
 }
 
+func (p *Pool) ClientData() []modules.PoolClients {
+	pc := make([]modules.PoolClients, len(p.clients))
+	for cn, c := range p.clients {
+		pw := make([]modules.PoolWorkers, len(c.Workers))
+		for wn, _ := range c.Workers {
+			worker := modules.PoolWorkers{
+				WorkerName: wn,
+			}
+			pw = append(pw, worker)
+		}
+		client := modules.PoolClients{
+			ClientName: cn,
+		}
+		pc = append(pc, client)
+	}
+	return pc
+}
+
 // checkAddress checks that the miner has an address, fetching an address from
 // the wallet if not.
 func (p *Pool) checkAddress() error {
 	if p.InternalSettings().PoolOperatorWallet != (types.UnlockHash{}) {
 		return nil
 	}
-	// uc, err := p.wallet.NextAddress()
-	// if err != nil {
-	// 	return err
-	// }
-	// p.persist.Address = uc.UnlockHash()
-	// return nil
 	return errNoAddressSet
 }

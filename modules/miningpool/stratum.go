@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/NebulousLabs/Sia/crypto"
 	"github.com/NebulousLabs/Sia/encoding"
@@ -231,19 +232,15 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	tb, _ := hex.DecodeString(nTime)
 	b.Timestamp = types.Timestamp(encoding.DecUint64(tb))
 
-	coinb1 := h.p.coinB1()
+	cointxn := h.p.coinB1()
 	ex1, _ := hex.DecodeString(h.s.printNonce())
 	ex2, _ := hex.DecodeString(extraNonce2)
 	coinb2, _ := hex.DecodeString(h.p.coinB2())
-	coinbaseBytes := make([]byte, len(coinb1)+len(ex1)+len(ex2)+len(coinb2))
-	coinbaseBytes = append(coinbaseBytes, coinb1...)
-	coinbaseBytes = append(coinbaseBytes, ex1...)
-	coinbaseBytes = append(coinbaseBytes, ex2...)
-	coinbaseBytes = append(coinbaseBytes, coinb2...)
-	coinbaseTxn := types.Transaction{
-		ArbitraryData: [][]byte{coinbaseBytes},
-	}
-	b.Transactions = append([]types.Transaction{coinbaseTxn}, b.Transactions...)
+	cointxn.ArbitraryData[0] = append(cointxn.ArbitraryData[0], ex1...)
+	cointxn.ArbitraryData[0] = append(cointxn.ArbitraryData[0], ex2...)
+	cointxn.ArbitraryData[0] = append(cointxn.ArbitraryData[0], coinb2...)
+	h.p.log.Debugf("coinbase size is cointxn(%d)\n", cointxn.MarshalSiaSize())
+	b.Transactions = append([]types.Transaction{cointxn}, b.Transactions...)
 	h.p.log.Debugf("MerkleRoot is %v\n", b.MerkleRoot())
 	h.p.log.Debugf("BH hash is %v\n", b.ID())
 	h.p.log.Debugf("Target is  %064x\n", h.p.persist.Target.Int())
@@ -251,6 +248,24 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	if err != nil {
 		h.p.log.Printf("Failed to SubmitBlock(): %v\n", err)
 		r.Result = json.RawMessage(`false`)
+		buf := new(bytes.Buffer)
+		encoding.NewEncoder(buf).EncodeAll(b.Header())
+
+		hb := ConvertByte2Uint32(buf.Bytes())
+		h.p.log.Debugf("Block Header\nParent ID\n")
+		for i := 0; i < 8; i++ {
+			h.p.log.Debugf("%08X\n", hb[i])
+		}
+		h.p.log.Debugf("Nonce\n")
+		h.p.log.Debugf("%08X\n", hb[8])
+		h.p.log.Debugf("%08X\n", hb[9])
+		h.p.log.Debugf("Timestamp\n")
+		h.p.log.Debugf("%08X\n", hb[10])
+		h.p.log.Debugf("%08X\n", hb[11])
+		h.p.log.Debugf("MerkleRoot\n")
+		for i := 0; i < 8; i++ {
+			h.p.log.Debugf("%08X\n", hb[12+i])
+		}
 
 	}
 
@@ -389,20 +404,21 @@ func sPrintID(id uint64) string {
 	return fmt.Sprintf("%016x", id)
 }
 
-func (p *Pool) coinB1() []byte {
+func (p *Pool) coinB1() types.Transaction {
 	s := fmt.Sprintf("\000     %s     \000", p.InternalSettings().PoolName)
 	if ((len(modules.PrefixNonSia[:]) + len(s)) % 2) != 0 {
 		// odd length, add extra null
 		s = s + "\000"
 	}
-	//	cb := make([]byte, len(modules.PrefixNonSia[:])+len(s))
-	return append(modules.PrefixNonSia[:], s...)
+	cb := make([]byte, len(modules.PrefixNonSia[:])+len(s)+12) // represents the bytes appended later
+	cb = append(modules.PrefixNonSia[:], s...)
+	return types.Transaction{
+		ArbitraryData: [][]byte{cb},
+	}
 }
 
 func (p *Pool) coinB1Txn() string {
-	coinbaseTxn := types.Transaction{
-		ArbitraryData: [][]byte{p.coinB1()},
-	}
+	coinbaseTxn := p.coinB1()
 	buf := new(bytes.Buffer)
 	coinbaseTxn.MarshalSia(buf)
 	return hex.EncodeToString(buf.Bytes())
@@ -410,4 +426,14 @@ func (p *Pool) coinB1Txn() string {
 
 func (p *Pool) coinB2() string {
 	return "00000000"
+}
+func ConvertByte2Uint32(b []byte) []uint32 {
+	if len(b)%4 != 0 {
+		return nil
+	}
+	r := make([]uint32, len(b)/4)
+	for i := range r {
+		r[i] = *(*uint32)(unsafe.Pointer(&b[i*4]))
+	}
+	return r
 }

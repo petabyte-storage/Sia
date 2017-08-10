@@ -1,7 +1,8 @@
 package pool
 
 import (
-	"fmt"
+	"encoding/binary"
+	"encoding/hex"
 )
 
 //
@@ -38,5 +39,7 @@ func (s *Session) printID() string {
 }
 
 func (s *Session) printNonce() string {
-	return fmt.Sprintf("%08x", s.ExtraNonce1)
+	ex1 := make([]byte, 4)
+	binary.LittleEndian.PutUint32(ex1, s.ExtraNonce1)
+	return hex.EncodeToString(ex1)
 }

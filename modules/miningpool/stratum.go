@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"io"
 	"log"
 	"math/rand"
@@ -235,37 +236,36 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	cointxn := h.p.coinB1()
 	ex1, _ := hex.DecodeString(h.s.printNonce())
 	ex2, _ := hex.DecodeString(extraNonce2)
-	coinb2, _ := hex.DecodeString(h.p.coinB2())
 	cointxn.ArbitraryData[0] = append(cointxn.ArbitraryData[0], ex1...)
 	cointxn.ArbitraryData[0] = append(cointxn.ArbitraryData[0], ex2...)
-	cointxn.ArbitraryData[0] = append(cointxn.ArbitraryData[0], coinb2...)
-	h.p.log.Debugf("coinbase size is cointxn(%d)\n", cointxn.MarshalSiaSize())
-	b.Transactions = append([]types.Transaction{cointxn}, b.Transactions...)
-	h.p.log.Debugf("MerkleRoot is %v\n", b.MerkleRoot())
-	h.p.log.Debugf("BH hash is %v\n", b.ID())
+
+	b.Transactions = append(b.Transactions, []types.Transaction{cointxn}...)
+	fmt.Printf("\nStarting\n")
+	h.p.log.Debugf("Block MerkleRoot is %v\n", b.MerkleRoot())
+	// h.p.log.Debugf("BH hash is %v\n", b.ID())
 	h.p.log.Debugf("Target is  %064x\n", h.p.persist.Target.Int())
 	err = h.p.managedSubmitBlock(*b)
 	if err != nil {
 		h.p.log.Printf("Failed to SubmitBlock(): %v\n", err)
 		r.Result = json.RawMessage(`false`)
-		buf := new(bytes.Buffer)
-		encoding.NewEncoder(buf).EncodeAll(b.Header())
+		// buf := new(bytes.Buffer)
+		// encoding.NewEncoder(buf).EncodeAll(b.Header())
 
-		hb := ConvertByte2Uint32(buf.Bytes())
-		h.p.log.Debugf("Block Header\nParent ID\n")
-		for i := 0; i < 8; i++ {
-			h.p.log.Debugf("%08X\n", hb[i])
-		}
-		h.p.log.Debugf("Nonce\n")
-		h.p.log.Debugf("%08X\n", hb[8])
-		h.p.log.Debugf("%08X\n", hb[9])
-		h.p.log.Debugf("Timestamp\n")
-		h.p.log.Debugf("%08X\n", hb[10])
-		h.p.log.Debugf("%08X\n", hb[11])
-		h.p.log.Debugf("MerkleRoot\n")
-		for i := 0; i < 8; i++ {
-			h.p.log.Debugf("%08X\n", hb[12+i])
-		}
+		// hb := ConvertByte2Uint32(buf.Bytes())
+		// h.p.log.Debugf("Block Header\nParent ID\n")
+		// for i := 0; i < 8; i++ {
+		// 	h.p.log.Debugf("%08X\n", hb[i])
+		// }
+		// h.p.log.Debugf("Nonce\n")
+		// h.p.log.Debugf("%08X\n", hb[8])
+		// h.p.log.Debugf("%08X\n", hb[9])
+		// h.p.log.Debugf("Timestamp\n")
+		// h.p.log.Debugf("%08X\n", hb[10])
+		// h.p.log.Debugf("%08X\n", hb[11])
+		// h.p.log.Debugf("MerkleRoot\n")
+		// for i := 0; i < 8; i++ {
+		// 	h.p.log.Debugf("%08X\n", hb[12+i])
+		// }
 
 	}
 
@@ -281,7 +281,6 @@ func (h *Handler) sendStratumNotify() {
 		h.p.log.Println("Error getting header for work: ", err)
 		return
 	}
-
 	branch1 := crypto.NewTree()
 	var buf bytes.Buffer
 	for _, payout := range h.p.sourceBlock.MinerPayouts {
@@ -297,14 +296,42 @@ func (h *Handler) sendStratumNotify() {
 		buf.Reset()
 	}
 
+	type SubTree struct {
+		next   *SubTree
+		height int // Int is okay because a height over 300 is physically unachievable.
+		sum    []byte
+	}
+
+	type Tree struct {
+		head         *SubTree
+		hash         hash.Hash
+		currentIndex uint64
+		proofIndex   uint64
+		proofSet     [][]byte
+		cachedTree   bool
+	}
+	tr := *(*Tree)(unsafe.Pointer(branch1))
+
+	fmt.Printf("Branch1 Hash %s\n", branch1.Root().String())
+	for st := tr.head; st != nil; st = st.next {
+		fmt.Printf("Height %d Hash %x\n", st.height, st.sum)
+	}
+	tr2 := *(*Tree)(unsafe.Pointer(branch2))
+
+	fmt.Printf("Branch2 Hash %s\n", branch2.Root().String())
+	for st := tr2.head; st != nil; st = st.next {
+		fmt.Printf("Height %d Hash %x\n", st.height, st.sum)
+	}
 	job, _ := newJob(h.p)
 	h.s.addJob(job)
-
-	// b1m, _ := branch1.Root().MarshalJSON()
+	b1m := hex.EncodeToString(tr.head.sum)
+	b2m := hex.EncodeToString(tr2.head.sum)
+	//	b1m, _ := branch1.Root().MarshalJSON()
 	// b2m, _ := branch2.Root().MarshalJSON()
 	// merkleBranch := fmt.Sprintf(`%s, %s`, string(b1m), string(b2m))
-	b1m, _ := bh.MerkleRoot.MarshalJSON()
-	merkleBranch := string(b1m)
+	merkleBranch := fmt.Sprintf(`"%s", "%s"`, b2m, b1m)
+	// b1m, _ := h.p.sourceBlock.MerkleRoot().MarshalJSON()
+	// merkleBranch := string(b1m)
 	jobid := job.printID()
 
 	bpm, _ := bh.ParentID.MarshalJSON()
@@ -326,7 +353,7 @@ func (h *Handler) sendStratumNotify() {
 
 // Dispatcher contains a map of ip addresses to handlers
 type Dispatcher struct {
-	handlers map[string]*Handler `map:"map[ip]*Handler"`
+	handlers map[string]*Handler
 	ln       net.Listener
 	mu       sync.RWMutex
 	p        *Pool
@@ -405,13 +432,14 @@ func sPrintID(id uint64) string {
 }
 
 func (p *Pool) coinB1() types.Transaction {
-	s := fmt.Sprintf("\000     %s     \000", p.InternalSettings().PoolName)
+	s := fmt.Sprintf("\000     \"%s\"     \000", p.InternalSettings().PoolName)
 	if ((len(modules.PrefixNonSia[:]) + len(s)) % 2) != 0 {
 		// odd length, add extra null
 		s = s + "\000"
 	}
-	cb := make([]byte, len(modules.PrefixNonSia[:])+len(s)+12) // represents the bytes appended later
-	cb = append(modules.PrefixNonSia[:], s...)
+	cb := make([]byte, len(modules.PrefixNonSia[:])+len(s)) // represents the bytes appended later
+	n := copy(cb, modules.PrefixNonSia[:])
+	copy(cb[n:], s)
 	return types.Transaction{
 		ArbitraryData: [][]byte{cb},
 	}
@@ -420,12 +448,14 @@ func (p *Pool) coinB1() types.Transaction {
 func (p *Pool) coinB1Txn() string {
 	coinbaseTxn := p.coinB1()
 	buf := new(bytes.Buffer)
-	coinbaseTxn.MarshalSia(buf)
-	return hex.EncodeToString(buf.Bytes())
+	coinbaseTxn.MarshalSiaNoSignatures(buf)
+	b := buf.Bytes()
+	// binary.LittleEndian.PutUint64(b[144:159], binary.LittleEndian.Uint64(b[144:159])+8)
+	binary.LittleEndian.PutUint64(b[72:87], binary.LittleEndian.Uint64(b[72:87])+8)
+	return hex.EncodeToString(b)
 }
-
 func (p *Pool) coinB2() string {
-	return "00000000"
+	return "0000000000000000"
 }
 func ConvertByte2Uint32(b []byte) []uint32 {
 	if len(b)%4 != 0 {

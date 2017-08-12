@@ -5,6 +5,7 @@ package types
 
 import (
 	"bytes"
+	"fmt"
 
 	"github.com/NebulousLabs/Sia/build"
 	"github.com/NebulousLabs/Sia/crypto"
@@ -111,6 +112,7 @@ func (b Block) ID() BlockID {
 // tree are composed of the miner outputs (one leaf per payout), and the
 // transactions (one leaf per transaction).
 func (b Block) MerkleRoot() crypto.Hash {
+	fmt.Printf("MerkleRoot()\n")
 	tree := crypto.NewTree()
 	var buf bytes.Buffer
 	for _, payout := range b.MinerPayouts {
@@ -118,11 +120,13 @@ func (b Block) MerkleRoot() crypto.Hash {
 		tree.Push(buf.Bytes())
 		buf.Reset()
 	}
+	fmt.Printf("Num payouts %d\n", len(b.MinerPayouts))
 	for _, txn := range b.Transactions {
 		txn.MarshalSia(&buf)
 		tree.Push(buf.Bytes())
 		buf.Reset()
 	}
+	fmt.Printf("Num transxs %d\n", len(b.Transactions))
 
 	// Sanity check - verify that this root is the same as the root provided in
 	// the old implementation.
@@ -138,8 +142,10 @@ func (b Block) MerkleRoot() crypto.Hash {
 			panic("Block MerkleRoot implementation is broken")
 		}
 	}
+	tr := tree.Root()
+	fmt.Printf("MerkleRoot() Done\n")
 
-	return tree.Root()
+	return tr
 }
 
 // MinerPayoutID returns the ID of the miner payout at the given index, which

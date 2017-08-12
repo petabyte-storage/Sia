@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"hash"
 	"io"
 	"log"
 	"math/rand"
@@ -281,59 +280,85 @@ func (h *Handler) sendStratumNotify() {
 		h.p.log.Println("Error getting header for work: ", err)
 		return
 	}
-	branch1 := crypto.NewTree()
-	var buf bytes.Buffer
-	for _, payout := range h.p.sourceBlock.MinerPayouts {
-		payout.MarshalSia(&buf)
-		branch1.Push(buf.Bytes())
-		buf.Reset()
-	}
-	branch2 := crypto.NewTree()
+	// branch1 := crypto.NewTree()
+	// var buf bytes.Buffer
+	// for _, payout := range h.p.sourceBlock.MinerPayouts {
+	// 	payout.MarshalSia(&buf)
+	// 	branch1.Push(buf.Bytes())
+	// 	buf.Reset()
+	// }
+	// branch2 := crypto.NewTree()
 
-	for _, txn := range h.p.sourceBlock.Transactions {
-		txn.MarshalSia(&buf)
-		branch2.Push(buf.Bytes())
-		buf.Reset()
-	}
+	// for _, txn := range h.p.sourceBlock.Transactions {
+	// 	txn.MarshalSia(&buf)
+	// 	branch2.Push(buf.Bytes())
+	// 	buf.Reset()
+	// }
 
-	type SubTree struct {
-		next   *SubTree
-		height int // Int is okay because a height over 300 is physically unachievable.
-		sum    []byte
-	}
+	// type SubTree struct {
+	// 	next   *SubTree
+	// 	height int // Int is okay because a height over 300 is physically unachievable.
+	// 	sum    []byte
+	// }
 
-	type Tree struct {
-		head         *SubTree
-		hash         hash.Hash
-		currentIndex uint64
-		proofIndex   uint64
-		proofSet     [][]byte
-		cachedTree   bool
-	}
-	tr := *(*Tree)(unsafe.Pointer(branch1))
+	// type Tree struct {
+	// 	head         *SubTree
+	// 	hash         hash.Hash
+	// 	currentIndex uint64
+	// 	proofIndex   uint64
+	// 	proofSet     [][]byte
+	// 	cachedTree   bool
+	// }
+	// tr := *(*Tree)(unsafe.Pointer(branch1))
 
-	fmt.Printf("Branch1 Hash %s\n", branch1.Root().String())
-	for st := tr.head; st != nil; st = st.next {
-		fmt.Printf("Height %d Hash %x\n", st.height, st.sum)
-	}
-	tr2 := *(*Tree)(unsafe.Pointer(branch2))
+	// fmt.Printf("Branch1 Hash %s\n", branch1.Root().String())
+	// for st := tr.head; st != nil; st = st.next {
+	// 	fmt.Printf("Height %d Hash %x\n", st.height, st.sum)
+	// }
+	// tr2 := *(*Tree)(unsafe.Pointer(branch2))
 
-	fmt.Printf("Branch2 Hash %s\n", branch2.Root().String())
-	for st := tr2.head; st != nil; st = st.next {
-		fmt.Printf("Height %d Hash %x\n", st.height, st.sum)
-	}
+	// fmt.Printf("Branch2 Hash %s\n", branch2.Root().String())
+	// for st := tr2.head; st != nil; st = st.next {
+	// 	fmt.Printf("Height %d Hash %x\n", st.height, st.sum)
+	// }
 	job, _ := newJob(h.p)
 	h.s.addJob(job)
-	b1m := hex.EncodeToString(tr.head.sum)
-	b2m := hex.EncodeToString(tr2.head.sum)
-	//	b1m, _ := branch1.Root().MarshalJSON()
+	// b1m := hex.EncodeToString(tr.head.sum)
+	// b2m := hex.EncodeToString(tr2.head.sum)
+	// b1m, _ := branch1.Root().MarshalJSON()
 	// b2m, _ := branch2.Root().MarshalJSON()
 	// merkleBranch := fmt.Sprintf(`%s, %s`, string(b1m), string(b2m))
-	merkleBranch := fmt.Sprintf(`"%s", "%s"`, b2m, b1m)
+	// merkleBranch := fmt.Sprintf(`"%s", "%s"`, b2m, b1m)
 	// b1m, _ := h.p.sourceBlock.MerkleRoot().MarshalJSON()
 	// merkleBranch := string(b1m)
 	jobid := job.printID()
 
+	// create tree using index of arbTxn
+	tree := crypto.NewTree()
+	tree.SetIndex(uint64(len(h.p.sourceBlock.MinerPayouts) + len(h.p.sourceBlock.Transactions) - 1))
+
+	// add leaves to tree
+	var buf bytes.Buffer
+	for _, payout := range h.p.sourceBlock.MinerPayouts {
+		payout.MarshalSia(&buf)
+		tree.Push(buf.Bytes())
+		buf.Reset()
+	}
+	for _, tx := range h.p.sourceBlock.Transactions {
+		tx.MarshalSia(&buf)
+		tree.Push(buf.Bytes())
+		buf.Reset()
+	}
+	// add dummy leaf to represent arbTxn
+	tree.Push([]byte("arbTxn"))
+	// compute branch for arbTxn
+	var merkleBranch []string
+	_, proof, _, _ := tree.Prove()
+	for _, p := range proof {
+		merkleBranch = append(merkleBranch, hex.EncodeToString(p[:]))
+	}
+	mb, _ := json.Marshal(merkleBranch[1:])
+	h.p.log.Debugf("merkleBranch = %s", mb)
 	bpm, _ := bh.ParentID.MarshalJSON()
 
 	version := ""
@@ -345,8 +370,8 @@ func (h *Handler) sendStratumNotify() {
 	ntime := hex.EncodeToString(buf.Bytes())
 
 	cleanJobs := false
-	raw := fmt.Sprintf(`[ "%s", %s, "%s", "%s", [%s], "%s", "%s", "%s", %t ]`,
-		jobid, string(bpm), h.p.coinB1Txn(), h.p.coinB2(), merkleBranch, version, nbits, ntime, cleanJobs)
+	raw := fmt.Sprintf(`[ "%s", %s, "%s", "%s", %s, "%s", "%s", "%s", %t ]`,
+		jobid, string(bpm), h.p.coinB1Txn(), h.p.coinB2(), mb, version, nbits, ntime, cleanJobs)
 	r.Params = json.RawMessage(raw)
 	h.sendRequest(r)
 }

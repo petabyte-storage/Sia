@@ -167,20 +167,31 @@ func (h *Handler) handleStatumAuthorize(m StratumRequestMsg) {
 		}
 		client := p[0]
 		worker := ""
-		if strings.Contains(p[0], "./_") {
-			s := strings.SplitN(p[0], "./_", 2)
+		if strings.Contains(client, ".") {
+			s := strings.SplitN(client, ".", -1)
 			client = s[0]
 			worker = s[1]
 		}
 		c := findClient(h.p, client)
 		if c == nil {
-			c, _ = newClient(h.p)
+			h.p.log.Printf("Adding new client: %s", client)
+			c, _ = newClient(h.p, client)
+			h.p.addClient(c)
 		}
-		if c.Workers[worker] == nil {
-			c.Workers[worker], _ = newWorker(c, worker)
+		if c.Worker(worker) == nil {
+			w, _ := newWorker(c, worker)
+			c.addWorker(w)
+			h.p.log.Printf("Adding new worker: %s", worker)
 		}
 		h.p.log.Debugln("client = " + client + ", worker = " + worker)
-		h.s.addClient(c)
+		if c.Wallet().LoadString(c.Name()) != nil {
+			r.Result = json.RawMessage(`false`)
+			r.Error = json.RawMessage(`"Client Name must be valid wallet address"`)
+			h.p.log.Println("Client Name must be valid wallet address. Client name is: " + c.Name())
+		} else {
+			h.s.addClient(c)
+			h.s.addWorker(c.Worker(worker))
+		}
 		// TODO: figure out how to store this worker - probably in Session
 	default:
 		h.p.log.Debugln("Unknown stratum method: ", m.Method)
@@ -242,13 +253,22 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	b.Transactions = append(b.Transactions, []types.Transaction{cointxn}...)
 	h.p.log.Debugf("BH hash is %064v\n", b.ID())
 	h.p.log.Debugf("Target is  %064x\n", h.p.persist.Target.Int())
+	h.s.CurrentWorker.IncrementSharesThisBlock()
+	h.s.CurrentWorker.IncrementSharesThisSession()
 	err = h.p.managedSubmitBlock(*b)
 	if err != nil {
 		h.p.log.Printf("Failed to SubmitBlock(): %v\n", err)
 		r.Result = json.RawMessage(`false`)
+		h.sendResponse(r)
+		h.sendStratumNotify()
+		return
 	}
 
 	h.sendResponse(r)
+	h.s.CurrentWorker.ClearInvalidSharesThisBlock()
+	h.s.CurrentWorker.ClearSharesThisBlock()
+	h.s.CurrentWorker.IncrementBlocksFound()
+	h.s.CurrentWorker.SetLastShareTime(time.Now())
 	h.p.newSourceBlock()
 	h.sendStratumNotify()
 }

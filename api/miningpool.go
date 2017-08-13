@@ -29,7 +29,7 @@ type (
 	PoolClientsInfo struct {
 		NumberOfClients uint64           `json:"numberofclients"`
 		NumberOfWorkers uint64           `json:"numberofworkers"`
-		Clients         []PoolClientInfo `json:"clientnames"`
+		Clients         []PoolClientInfo `json:"clientinfo"`
 	}
 	PoolClientInfo struct {
 		ClientName  string           `json:"clientname"`
@@ -134,7 +134,32 @@ func (api *API) parsePoolSettings(req *http.Request) (modules.PoolInternalSettin
 }
 
 func (api *API) poolGetClientsInfo(w http.ResponseWriter, req *http.Request, _ httprouter.Params) {
-	//	pc := PoolClientsInfo{}
+	cd := api.pool.ClientData()
+	var nw uint64
+	var pc []PoolClientInfo
+	for _, c := range cd {
+		var pw []PoolWorkerInfo
+		for _, wn := range c.Workers {
+			worker := PoolWorkerInfo{
+				WorkerName:    wn.WorkerName,
+				LastShareTime: wn.LastShareTime,
+			}
+			pw = append(pw, worker)
+		}
+		client := PoolClientInfo{
+			ClientName:  c.ClientName,
+			Workers:     pw,
+			BlocksMined: c.BlocksMined,
+		}
+		pc = append(pc, client)
+		nw += uint64(len(pw))
+	}
+	pci := PoolClientsInfo{
+		NumberOfClients: uint64(len(pc)),
+		NumberOfWorkers: nw,
+		Clients:         pc,
+	}
+	WriteJSON(w, pci)
 }
 
 func (api *API) poolGetClientInfo(w http.ResponseWriter, req *http.Request, _ httprouter.Params) {

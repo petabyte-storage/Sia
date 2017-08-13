@@ -460,18 +460,27 @@ func (p *Pool) InternalSettings() modules.PoolInternalSettings {
 	return p.settings
 }
 
+func (p *Pool) addClient(c *Client) {
+	p.clients[c.Name()] = c
+}
+
 func (p *Pool) ClientData() []modules.PoolClients {
-	pc := make([]modules.PoolClients, len(p.clients))
+	var pc []modules.PoolClients
 	for cn, c := range p.clients {
-		pw := make([]modules.PoolWorkers, len(c.Workers))
-		for wn, _ := range c.Workers {
+		cbf := uint64(0)
+		var pw []modules.PoolWorkers
+		for wn, w := range c.Workers() {
 			worker := modules.PoolWorkers{
-				WorkerName: wn,
+				WorkerName:    wn,
+				LastShareTime: w.LastShareTime(),
 			}
+			cbf += w.BlocksFound()
 			pw = append(pw, worker)
 		}
 		client := modules.PoolClients{
-			ClientName: cn,
+			ClientName:  cn,
+			BlocksMined: cbf,
+			Workers:     pw,
 		}
 		pc = append(pc, client)
 	}

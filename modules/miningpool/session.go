@@ -30,6 +30,10 @@ func (s *Session) addClient(c *Client) {
 	s.Client = c
 }
 
+func (s *Session) addWorker(w *Worker) {
+	s.CurrentWorker = w
+}
+
 func (s *Session) addJob(j *Job) {
 	s.CurrentJob = j
 }

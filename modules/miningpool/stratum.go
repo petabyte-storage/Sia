@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"io"
 	"log"
 	"math/rand"
@@ -239,37 +240,17 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	cointxn.ArbitraryData[0] = append(cointxn.ArbitraryData[0], ex2...)
 
 	b.Transactions = append(b.Transactions, []types.Transaction{cointxn}...)
-	fmt.Printf("\nStarting\n")
-	h.p.log.Debugf("Block MerkleRoot is %v\n", b.MerkleRoot())
-	// h.p.log.Debugf("BH hash is %v\n", b.ID())
+	h.p.log.Debugf("BH hash is %064v\n", b.ID())
 	h.p.log.Debugf("Target is  %064x\n", h.p.persist.Target.Int())
 	err = h.p.managedSubmitBlock(*b)
 	if err != nil {
 		h.p.log.Printf("Failed to SubmitBlock(): %v\n", err)
 		r.Result = json.RawMessage(`false`)
-		// buf := new(bytes.Buffer)
-		// encoding.NewEncoder(buf).EncodeAll(b.Header())
-
-		// hb := ConvertByte2Uint32(buf.Bytes())
-		// h.p.log.Debugf("Block Header\nParent ID\n")
-		// for i := 0; i < 8; i++ {
-		// 	h.p.log.Debugf("%08X\n", hb[i])
-		// }
-		// h.p.log.Debugf("Nonce\n")
-		// h.p.log.Debugf("%08X\n", hb[8])
-		// h.p.log.Debugf("%08X\n", hb[9])
-		// h.p.log.Debugf("Timestamp\n")
-		// h.p.log.Debugf("%08X\n", hb[10])
-		// h.p.log.Debugf("%08X\n", hb[11])
-		// h.p.log.Debugf("MerkleRoot\n")
-		// for i := 0; i < 8; i++ {
-		// 	h.p.log.Debugf("%08X\n", hb[12+i])
-		// }
-
 	}
 
 	h.sendResponse(r)
-
+	h.p.newSourceBlock()
+	h.sendStratumNotify()
 }
 func (h *Handler) sendStratumNotify() {
 	var r StratumRequestMsg
@@ -280,85 +261,55 @@ func (h *Handler) sendStratumNotify() {
 		h.p.log.Println("Error getting header for work: ", err)
 		return
 	}
-	// branch1 := crypto.NewTree()
-	// var buf bytes.Buffer
-	// for _, payout := range h.p.sourceBlock.MinerPayouts {
-	// 	payout.MarshalSia(&buf)
-	// 	branch1.Push(buf.Bytes())
-	// 	buf.Reset()
-	// }
-	// branch2 := crypto.NewTree()
-
-	// for _, txn := range h.p.sourceBlock.Transactions {
-	// 	txn.MarshalSia(&buf)
-	// 	branch2.Push(buf.Bytes())
-	// 	buf.Reset()
-	// }
-
-	// type SubTree struct {
-	// 	next   *SubTree
-	// 	height int // Int is okay because a height over 300 is physically unachievable.
-	// 	sum    []byte
-	// }
-
-	// type Tree struct {
-	// 	head         *SubTree
-	// 	hash         hash.Hash
-	// 	currentIndex uint64
-	// 	proofIndex   uint64
-	// 	proofSet     [][]byte
-	// 	cachedTree   bool
-	// }
-	// tr := *(*Tree)(unsafe.Pointer(branch1))
-
-	// fmt.Printf("Branch1 Hash %s\n", branch1.Root().String())
-	// for st := tr.head; st != nil; st = st.next {
-	// 	fmt.Printf("Height %d Hash %x\n", st.height, st.sum)
-	// }
-	// tr2 := *(*Tree)(unsafe.Pointer(branch2))
-
-	// fmt.Printf("Branch2 Hash %s\n", branch2.Root().String())
-	// for st := tr2.head; st != nil; st = st.next {
-	// 	fmt.Printf("Height %d Hash %x\n", st.height, st.sum)
-	// }
 	job, _ := newJob(h.p)
 	h.s.addJob(job)
-	// b1m := hex.EncodeToString(tr.head.sum)
-	// b2m := hex.EncodeToString(tr2.head.sum)
-	// b1m, _ := branch1.Root().MarshalJSON()
-	// b2m, _ := branch2.Root().MarshalJSON()
-	// merkleBranch := fmt.Sprintf(`%s, %s`, string(b1m), string(b2m))
-	// merkleBranch := fmt.Sprintf(`"%s", "%s"`, b2m, b1m)
-	// b1m, _ := h.p.sourceBlock.MerkleRoot().MarshalJSON()
-	// merkleBranch := string(b1m)
 	jobid := job.printID()
 
-	// create tree using index of arbTxn
-	tree := crypto.NewTree()
-	tree.SetIndex(uint64(len(h.p.sourceBlock.MinerPayouts) + len(h.p.sourceBlock.Transactions) - 1))
-
-	// add leaves to tree
+	mbranch := crypto.NewTree()
 	var buf bytes.Buffer
 	for _, payout := range h.p.sourceBlock.MinerPayouts {
 		payout.MarshalSia(&buf)
-		tree.Push(buf.Bytes())
+		mbranch.Push(buf.Bytes())
 		buf.Reset()
 	}
-	for _, tx := range h.p.sourceBlock.Transactions {
-		tx.MarshalSia(&buf)
-		tree.Push(buf.Bytes())
+
+	for _, txn := range h.p.sourceBlock.Transactions {
+		txn.MarshalSia(&buf)
+		mbranch.Push(buf.Bytes())
 		buf.Reset()
 	}
-	// add dummy leaf to represent arbTxn
-	tree.Push([]byte("arbTxn"))
-	// compute branch for arbTxn
-	var merkleBranch []string
-	_, proof, _, _ := tree.Prove()
-	for _, p := range proof {
-		merkleBranch = append(merkleBranch, hex.EncodeToString(p[:]))
+	//
+	// This whole approach needs to be revisited.  I basically am cheating to look
+	// inside the merkle tree struct to determine if the head is a leaf or not
+	//
+	type SubTree struct {
+		next   *SubTree
+		height int // Int is okay because a height over 300 is physically unachievable.
+		sum    []byte
 	}
-	mb, _ := json.Marshal(merkleBranch[1:])
-	h.p.log.Debugf("merkleBranch = %s", mb)
+
+	type Tree struct {
+		head         *SubTree
+		hash         hash.Hash
+		currentIndex uint64
+		proofIndex   uint64
+		proofSet     [][]byte
+		cachedTree   bool
+	}
+	tr := *(*Tree)(unsafe.Pointer(mbranch))
+
+	h.p.log.Debugf("mBranch Hash %s\n", mbranch.Root().String())
+	for st := tr.head; st != nil; st = st.next {
+		h.p.log.Debugf("Height %d Hash %x\n", st.height, st.sum)
+	}
+	var merkleBranch string
+	if tr.head.height == 0 {
+		// single leaf, so we need both this leaf and the following node in branch list
+		merkleBranch = fmt.Sprintf(`["%s","%s"]`, hex.EncodeToString(tr.head.sum), hex.EncodeToString(tr.head.next.sum))
+	} else {
+		merkleBranch = fmt.Sprintf(`["%s"]`, hex.EncodeToString(tr.head.sum))
+	}
+
 	bpm, _ := bh.ParentID.MarshalJSON()
 
 	version := ""
@@ -371,7 +322,7 @@ func (h *Handler) sendStratumNotify() {
 
 	cleanJobs := false
 	raw := fmt.Sprintf(`[ "%s", %s, "%s", "%s", %s, "%s", "%s", "%s", %t ]`,
-		jobid, string(bpm), h.p.coinB1Txn(), h.p.coinB2(), mb, version, nbits, ntime, cleanJobs)
+		jobid, string(bpm), h.p.coinB1Txn(), h.p.coinB2(), merkleBranch, version, nbits, ntime, cleanJobs)
 	r.Params = json.RawMessage(raw)
 	h.sendRequest(r)
 }

@@ -151,12 +151,12 @@ func (p *Pool) managedSubmitBlock(b types.Block) error {
 	// Grab a new address for the miner. Call may fail if the wallet is locked
 	// or if the wallet addresses have been exhausted.
 	p.persist.BlocksFound = append(p.persist.BlocksFound, b.ID())
-	var uc types.UnlockConditions
-	uc, err = p.wallet.NextAddress()
-	if err != nil {
-		return err
-	}
-	p.persist.Address = uc.UnlockHash()
+	// var uc types.UnlockConditions
+	// uc, err = p.wallet.NextAddress()
+	// if err != nil {
+	// 	return err
+	// }
+	// p.persist.Address = uc.UnlockHash()
 	return p.saveSync()
 }
 

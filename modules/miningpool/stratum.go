@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"io"
 	"log"
 	"math/rand"
@@ -166,20 +167,31 @@ func (h *Handler) handleStatumAuthorize(m StratumRequestMsg) {
 		}
 		client := p[0]
 		worker := ""
-		if strings.Contains(p[0], "./_") {
-			s := strings.SplitN(p[0], "./_", 2)
+		if strings.Contains(client, ".") {
+			s := strings.SplitN(client, ".", -1)
 			client = s[0]
 			worker = s[1]
 		}
 		c := findClient(h.p, client)
 		if c == nil {
-			c, _ = newClient(h.p)
+			h.p.log.Printf("Adding new client: %s", client)
+			c, _ = newClient(h.p, client)
+			h.p.addClient(c)
 		}
-		if c.Workers[worker] == nil {
-			c.Workers[worker], _ = newWorker(c, worker)
+		if c.Worker(worker) == nil {
+			w, _ := newWorker(c, worker)
+			c.addWorker(w)
+			h.p.log.Printf("Adding new worker: %s", worker)
 		}
 		h.p.log.Debugln("client = " + client + ", worker = " + worker)
-		h.s.addClient(c)
+		if c.Wallet().LoadString(c.Name()) != nil {
+			r.Result = json.RawMessage(`false`)
+			r.Error = json.RawMessage(`"Client Name must be valid wallet address"`)
+			h.p.log.Println("Client Name must be valid wallet address. Client name is: " + c.Name())
+		} else {
+			h.s.addClient(c)
+			h.s.addWorker(c.Worker(worker))
+		}
 		// TODO: figure out how to store this worker - probably in Session
 	default:
 		h.p.log.Debugln("Unknown stratum method: ", m.Method)
@@ -235,42 +247,30 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	cointxn := h.p.coinB1()
 	ex1, _ := hex.DecodeString(h.s.printNonce())
 	ex2, _ := hex.DecodeString(extraNonce2)
-	coinb2, _ := hex.DecodeString(h.p.coinB2())
 	cointxn.ArbitraryData[0] = append(cointxn.ArbitraryData[0], ex1...)
 	cointxn.ArbitraryData[0] = append(cointxn.ArbitraryData[0], ex2...)
-	cointxn.ArbitraryData[0] = append(cointxn.ArbitraryData[0], coinb2...)
-	h.p.log.Debugf("coinbase size is cointxn(%d)\n", cointxn.MarshalSiaSize())
-	b.Transactions = append([]types.Transaction{cointxn}, b.Transactions...)
-	h.p.log.Debugf("MerkleRoot is %v\n", b.MerkleRoot())
-	h.p.log.Debugf("BH hash is %v\n", b.ID())
+
+	b.Transactions = append(b.Transactions, []types.Transaction{cointxn}...)
+	h.p.log.Debugf("BH hash is %064v\n", b.ID())
 	h.p.log.Debugf("Target is  %064x\n", h.p.persist.Target.Int())
+	h.s.CurrentWorker.IncrementSharesThisBlock()
+	h.s.CurrentWorker.IncrementSharesThisSession()
 	err = h.p.managedSubmitBlock(*b)
 	if err != nil {
 		h.p.log.Printf("Failed to SubmitBlock(): %v\n", err)
 		r.Result = json.RawMessage(`false`)
-		buf := new(bytes.Buffer)
-		encoding.NewEncoder(buf).EncodeAll(b.Header())
-
-		hb := ConvertByte2Uint32(buf.Bytes())
-		h.p.log.Debugf("Block Header\nParent ID\n")
-		for i := 0; i < 8; i++ {
-			h.p.log.Debugf("%08X\n", hb[i])
-		}
-		h.p.log.Debugf("Nonce\n")
-		h.p.log.Debugf("%08X\n", hb[8])
-		h.p.log.Debugf("%08X\n", hb[9])
-		h.p.log.Debugf("Timestamp\n")
-		h.p.log.Debugf("%08X\n", hb[10])
-		h.p.log.Debugf("%08X\n", hb[11])
-		h.p.log.Debugf("MerkleRoot\n")
-		for i := 0; i < 8; i++ {
-			h.p.log.Debugf("%08X\n", hb[12+i])
-		}
-
+		h.sendResponse(r)
+		h.sendStratumNotify()
+		return
 	}
 
 	h.sendResponse(r)
-
+	h.s.CurrentWorker.ClearInvalidSharesThisBlock()
+	h.s.CurrentWorker.ClearSharesThisBlock()
+	h.s.CurrentWorker.IncrementBlocksFound()
+	h.s.CurrentWorker.SetLastShareTime(time.Now())
+	h.p.newSourceBlock()
+	h.sendStratumNotify()
 }
 func (h *Handler) sendStratumNotify() {
 	var r StratumRequestMsg
@@ -281,31 +281,54 @@ func (h *Handler) sendStratumNotify() {
 		h.p.log.Println("Error getting header for work: ", err)
 		return
 	}
+	job, _ := newJob(h.p)
+	h.s.addJob(job)
+	jobid := job.printID()
 
-	branch1 := crypto.NewTree()
+	mbranch := crypto.NewTree()
 	var buf bytes.Buffer
 	for _, payout := range h.p.sourceBlock.MinerPayouts {
 		payout.MarshalSia(&buf)
-		branch1.Push(buf.Bytes())
+		mbranch.Push(buf.Bytes())
 		buf.Reset()
 	}
-	branch2 := crypto.NewTree()
 
 	for _, txn := range h.p.sourceBlock.Transactions {
 		txn.MarshalSia(&buf)
-		branch2.Push(buf.Bytes())
+		mbranch.Push(buf.Bytes())
 		buf.Reset()
 	}
+	//
+	// This whole approach needs to be revisited.  I basically am cheating to look
+	// inside the merkle tree struct to determine if the head is a leaf or not
+	//
+	type SubTree struct {
+		next   *SubTree
+		height int // Int is okay because a height over 300 is physically unachievable.
+		sum    []byte
+	}
 
-	job, _ := newJob(h.p)
-	h.s.addJob(job)
+	type Tree struct {
+		head         *SubTree
+		hash         hash.Hash
+		currentIndex uint64
+		proofIndex   uint64
+		proofSet     [][]byte
+		cachedTree   bool
+	}
+	tr := *(*Tree)(unsafe.Pointer(mbranch))
 
-	// b1m, _ := branch1.Root().MarshalJSON()
-	// b2m, _ := branch2.Root().MarshalJSON()
-	// merkleBranch := fmt.Sprintf(`%s, %s`, string(b1m), string(b2m))
-	b1m, _ := bh.MerkleRoot.MarshalJSON()
-	merkleBranch := string(b1m)
-	jobid := job.printID()
+	h.p.log.Debugf("mBranch Hash %s\n", mbranch.Root().String())
+	for st := tr.head; st != nil; st = st.next {
+		h.p.log.Debugf("Height %d Hash %x\n", st.height, st.sum)
+	}
+	var merkleBranch string
+	if tr.head.height == 0 {
+		// single leaf, so we need both this leaf and the following node in branch list
+		merkleBranch = fmt.Sprintf(`["%s","%s"]`, hex.EncodeToString(tr.head.sum), hex.EncodeToString(tr.head.next.sum))
+	} else {
+		merkleBranch = fmt.Sprintf(`["%s"]`, hex.EncodeToString(tr.head.sum))
+	}
 
 	bpm, _ := bh.ParentID.MarshalJSON()
 
@@ -318,7 +341,7 @@ func (h *Handler) sendStratumNotify() {
 	ntime := hex.EncodeToString(buf.Bytes())
 
 	cleanJobs := false
-	raw := fmt.Sprintf(`[ "%s", %s, "%s", "%s", [%s], "%s", "%s", "%s", %t ]`,
+	raw := fmt.Sprintf(`[ "%s", %s, "%s", "%s", %s, "%s", "%s", "%s", %t ]`,
 		jobid, string(bpm), h.p.coinB1Txn(), h.p.coinB2(), merkleBranch, version, nbits, ntime, cleanJobs)
 	r.Params = json.RawMessage(raw)
 	h.sendRequest(r)
@@ -326,7 +349,7 @@ func (h *Handler) sendStratumNotify() {
 
 // Dispatcher contains a map of ip addresses to handlers
 type Dispatcher struct {
-	handlers map[string]*Handler `map:"map[ip]*Handler"`
+	handlers map[string]*Handler
 	ln       net.Listener
 	mu       sync.RWMutex
 	p        *Pool
@@ -405,13 +428,14 @@ func sPrintID(id uint64) string {
 }
 
 func (p *Pool) coinB1() types.Transaction {
-	s := fmt.Sprintf("\000     %s     \000", p.InternalSettings().PoolName)
+	s := fmt.Sprintf("\000     \"%s\"     \000", p.InternalSettings().PoolName)
 	if ((len(modules.PrefixNonSia[:]) + len(s)) % 2) != 0 {
 		// odd length, add extra null
 		s = s + "\000"
 	}
-	cb := make([]byte, len(modules.PrefixNonSia[:])+len(s)+12) // represents the bytes appended later
-	cb = append(modules.PrefixNonSia[:], s...)
+	cb := make([]byte, len(modules.PrefixNonSia[:])+len(s)) // represents the bytes appended later
+	n := copy(cb, modules.PrefixNonSia[:])
+	copy(cb[n:], s)
 	return types.Transaction{
 		ArbitraryData: [][]byte{cb},
 	}
@@ -420,12 +444,14 @@ func (p *Pool) coinB1() types.Transaction {
 func (p *Pool) coinB1Txn() string {
 	coinbaseTxn := p.coinB1()
 	buf := new(bytes.Buffer)
-	coinbaseTxn.MarshalSia(buf)
-	return hex.EncodeToString(buf.Bytes())
+	coinbaseTxn.MarshalSiaNoSignatures(buf)
+	b := buf.Bytes()
+	// binary.LittleEndian.PutUint64(b[144:159], binary.LittleEndian.Uint64(b[144:159])+8)
+	binary.LittleEndian.PutUint64(b[72:87], binary.LittleEndian.Uint64(b[72:87])+8)
+	return hex.EncodeToString(b)
 }
-
 func (p *Pool) coinB2() string {
-	return "00000000"
+	return "0000000000000000"
 }
 func ConvertByte2Uint32(b []byte) []uint32 {
 	if len(b)%4 != 0 {

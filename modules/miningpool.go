@@ -36,8 +36,9 @@ type (
 	}
 
 	PoolWorkers struct {
-		WorkerName    string    `json:"workername"`
-		LastShareTime time.Time `json:"lastsharetime"`
+		WorkerName      string    `json:"workername"`
+		SharesSubmitted uint64    `json:"sharessubmitted"`
+		LastShareTime   time.Time `json:"lastsharetime"`
 	}
 
 	// PoolWorkingStatus reports the working state of a pool. Can be one of

@@ -1,70 +1,105 @@
 package pool
 
 import (
+	"sync"
+
 	"github.com/NebulousLabs/Sia/types"
 )
-
-//
-// A Worker is an instance of one miner.  A Client often represents a user and the worker represents a single miner.  There
-// is a one to many client worker relationship
-//
-type Worker struct {
-	WorkerID          uint64
-	WorkerName        string
-	Parent            *Client
-	SharesThisSession uint64
-}
-
-func newWorker(c *Client, name string) (*Worker, error) {
-	id := c.Pool.newStratumID()
-	w := &Worker{
-		WorkerID:          id(),
-		WorkerName:        name,
-		Parent:            c,
-		SharesThisSession: 0,
-	}
-	return w, nil
-}
-
-func (w *Worker) printID() string {
-	return sPrintID(w.WorkerID)
-}
 
 //
 // A Client represents a user and may have one or more workers associated with it.  It is primarily used for
 // accounting and statistics.
 //
 type Client struct {
-	ClientID uint64           `json:"clientid"`
-	Wallet   types.UnlockHash `json:"wallet"`
-	Pool     *Pool
-	Workers  map[string]*Worker `map:"map[ip]*Worker"`
+	mu       sync.RWMutex
+	clientID uint64
+	name     string
+	wallet   types.UnlockHash
+	pool     *Pool
+	workers  map[string]*Worker //worker name to worker pointer mapping
 }
 
 // newClient creates a new Client record
-func newClient(p *Pool) (*Client, error) {
+func newClient(p *Pool, name string) (*Client, error) {
 	id := p.newStratumID()
 	c := &Client{
-		ClientID: id(),
-		Pool:     p,
-		Workers:  make(map[string]*Worker),
+		clientID: id(),
+		name:     name,
+		pool:     p,
+		workers:  make(map[string]*Worker),
 	}
 	return c, nil
 }
 
 func findClient(p *Pool, name string) *Client {
-	c := p.clients[name]
-	return c
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	c, ok := p.clients[name]
+	if ok {
+		return c
+	}
+	return nil
+}
+
+func (c *Client) Name() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.name
+}
+
+func (c *Client) SetName(n string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.name = n
+
+}
+
+func (c *Client) Wallet() *types.UnlockHash {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return &c.wallet
 }
 
 func (c *Client) addWallet(w types.UnlockHash) {
-	c.Wallet = w
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.wallet = w
+}
+
+func (c *Client) Pool() *Pool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.pool
+}
+func (c *Client) Worker(wn string) *Worker {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.workers[wn]
+}
+
+//
+// Workers returns a copy of the workers map.  Caution however since the map contains pointers to the actual live
+// worker data
+//
+func (c *Client) Workers() map[string]*Worker {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.workers
 }
 
 func (c *Client) addWorker(w *Worker) {
-	c.Workers[w.WorkerName] = w
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.workers[w.Name()] = w
 }
 
 func (c *Client) printID() string {
-	return sPrintID(c.ClientID)
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return sPrintID(c.clientID)
 }

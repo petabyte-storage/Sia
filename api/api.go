@@ -239,6 +239,8 @@ func New(requiredUserAgent string, requiredPassword string, cs modules.Consensus
 	// Mining pool API Calls
 	if api.pool != nil {
 		router.GET("/pool", api.poolHandler)
+		router.GET("/pool/clients", api.poolGetClientsInfo)
+		router.GET("/pool/client", api.poolGetClientInfo)
 		router.POST("/pool/config", RequirePassword(api.poolConfigHandlerPOST, requiredPassword)) // Change the settings of the host.
 		router.GET("/pool/config", RequirePassword(api.poolConfigHandler, requiredPassword))
 		router.GET("/pool/start", RequirePassword(api.poolStartHandler, requiredPassword))

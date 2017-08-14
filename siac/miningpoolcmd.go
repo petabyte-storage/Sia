@@ -46,6 +46,13 @@ Available settings:
 		Long:  "Stop mining pool (this may take a few moments).",
 		Run:   wrap(poolstopcmd),
 	}
+
+	poolClientsCmd = &cobra.Command{
+		Use:   "clients",
+		Short: "List clients",
+		Long:  "List client overview, use pool client <clientname> for details",
+		Run:   wrap(poolclientscmd),
+	}
 )
 
 // poolstartcmd is the handler for the command `siac pool start`.
@@ -116,5 +123,23 @@ func poolconfigcmd(param, value string) {
 	if err != nil {
 		die("Could not update pool settings:", err)
 
+	}
+}
+
+func poolclientscmd() {
+	clients := new(api.PoolClientsInfo)
+	err := getAPI("/pool/clients", clients)
+	if err != nil {
+		die("Could not get pool clients:", err)
+	}
+	fmt.Printf("Clients List:\n\n")
+	fmt.Printf("Number of Clients: %d\nNumber of Workers: %d\n\n", clients.NumberOfClients, clients.NumberOfWorkers)
+	fmt.Printf("                         Client Name                             Blocks Mined\n")
+	for _, c := range clients.Clients {
+		fmt.Printf("% 64.64s %d\n", c.ClientName, c.BlocksMined)
+		fmt.Printf("     Worker Name      Last Share Time\n")
+		for _, w := range c.Workers {
+			fmt.Printf(" % -16s     %v\n", w.WorkerName, w.LastShareTime)
+		}
 	}
 }

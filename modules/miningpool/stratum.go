@@ -172,11 +172,16 @@ func (h *Handler) handleStatumAuthorize(m StratumRequestMsg) {
 			client = s[0]
 			worker = s[1]
 		}
-		c := findClient(h.p, client)
+		c := h.p.FindClient(client)
 		if c == nil {
 			h.p.log.Printf("Adding new client: %s", client)
 			c, _ = newClient(h.p, client)
-			h.p.addClient(c)
+			h.p.AddClient(c)
+			//
+			// There is a race condition here which we can reduce/avoid by re-searching for the client once we
+			// have added it.
+			//
+			c = h.p.FindClient(client)
 		}
 		if c.Worker(worker) == nil {
 			w, _ := newWorker(c, worker)
@@ -186,7 +191,7 @@ func (h *Handler) handleStatumAuthorize(m StratumRequestMsg) {
 		h.p.log.Debugln("client = " + client + ", worker = " + worker)
 		if c.Wallet().LoadString(c.Name()) != nil {
 			r.Result = json.RawMessage(`false`)
-			r.Error = json.RawMessage(`"Client Name must be valid wallet address"`)
+			r.Error = json.RawMessage(`{"Client Name must be valid wallet address"}`)
 			h.p.log.Println("Client Name must be valid wallet address. Client name is: " + c.Name())
 		} else {
 			h.s.addClient(c)
@@ -231,10 +236,10 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	extraNonce2 := p[2]
 	nTime := p[3]
 	nonce := p[4]
-	h.p.log.Debugln("name = " + name + ", jobID = " + fmt.Sprint(jobID) + ", extraNonce2 = " + extraNonce2 + ", nTime = " + nTime + ", nonce = " + nonce)
+	h.p.log.Debugln("name = " + name + ", jobID = " + fmt.Sprintf("%X", jobID) + ", extraNonce2 = " + extraNonce2 + ", nTime = " + nTime + ", nonce = " + nonce)
 	if h.s.CurrentJob.JobID != jobID {
 		r.Result = json.RawMessage(`false`)
-		r.Error = json.RawMessage(`Stale`)
+		r.Error = json.RawMessage(`{"Stale"}`)
 	}
 	b := h.p.sourceBlock
 	bhNonce, err := hex.DecodeString(nonce)
@@ -263,13 +268,18 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 		h.sendStratumNotify()
 		return
 	}
+	h.p.log.Printf("Yay!!! Solved a block!!\n")
 
 	h.sendResponse(r)
 	h.s.CurrentWorker.ClearInvalidSharesThisBlock()
 	h.s.CurrentWorker.ClearSharesThisBlock()
 	h.s.CurrentWorker.IncrementBlocksFound()
 	h.s.CurrentWorker.SetLastShareTime(time.Now())
+
+	h.p.mu.Lock()
 	h.p.newSourceBlock()
+	h.p.mu.Unlock()
+
 	h.sendStratumNotify()
 }
 func (h *Handler) sendStratumNotify() {
@@ -318,17 +328,14 @@ func (h *Handler) sendStratumNotify() {
 	}
 	tr := *(*Tree)(unsafe.Pointer(mbranch))
 
+	var merkle []string
 	h.p.log.Debugf("mBranch Hash %s\n", mbranch.Root().String())
 	for st := tr.head; st != nil; st = st.next {
 		h.p.log.Debugf("Height %d Hash %x\n", st.height, st.sum)
+		merkle = append(merkle, hex.EncodeToString(st.sum))
 	}
-	var merkleBranch string
-	if tr.head.height == 0 {
-		// single leaf, so we need both this leaf and the following node in branch list
-		merkleBranch = fmt.Sprintf(`["%s","%s"]`, hex.EncodeToString(tr.head.sum), hex.EncodeToString(tr.head.next.sum))
-	} else {
-		merkleBranch = fmt.Sprintf(`["%s"]`, hex.EncodeToString(tr.head.sum))
-	}
+	mbj, _ := json.Marshal(merkle)
+	h.p.log.Debugf("merkleBranch: %s\n", mbj)
 
 	bpm, _ := bh.ParentID.MarshalJSON()
 
@@ -342,7 +349,7 @@ func (h *Handler) sendStratumNotify() {
 
 	cleanJobs := false
 	raw := fmt.Sprintf(`[ "%s", %s, "%s", "%s", %s, "%s", "%s", "%s", %t ]`,
-		jobid, string(bpm), h.p.coinB1Txn(), h.p.coinB2(), merkleBranch, version, nbits, ntime, cleanJobs)
+		jobid, string(bpm), h.p.coinB1Txn(), h.p.coinB2(), mbj, version, nbits, ntime, cleanJobs)
 	r.Params = json.RawMessage(raw)
 	h.sendRequest(r)
 }
@@ -446,20 +453,9 @@ func (p *Pool) coinB1Txn() string {
 	buf := new(bytes.Buffer)
 	coinbaseTxn.MarshalSiaNoSignatures(buf)
 	b := buf.Bytes()
-	// binary.LittleEndian.PutUint64(b[144:159], binary.LittleEndian.Uint64(b[144:159])+8)
 	binary.LittleEndian.PutUint64(b[72:87], binary.LittleEndian.Uint64(b[72:87])+8)
 	return hex.EncodeToString(b)
 }
 func (p *Pool) coinB2() string {
 	return "0000000000000000"
-}
-func ConvertByte2Uint32(b []byte) []uint32 {
-	if len(b)%4 != 0 {
-		return nil
-	}
-	r := make([]uint32, len(b)/4)
-	for i := range r {
-		r[i] = *(*uint32)(unsafe.Pointer(&b[i*4]))
-	}
-	return r
 }

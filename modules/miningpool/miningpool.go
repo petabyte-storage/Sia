@@ -460,8 +460,20 @@ func (p *Pool) InternalSettings() modules.PoolInternalSettings {
 	return p.settings
 }
 
-func (p *Pool) addClient(c *Client) {
+func (p *Pool) AddClient(c *Client) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	p.clients[c.Name()] = c
+}
+func (p *Pool) FindClient(name string) *Client {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	c, ok := p.clients[name]
+	if ok {
+		return c
+	}
+	return nil
 }
 
 func (p *Pool) ClientData() []modules.PoolClients {

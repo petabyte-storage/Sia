@@ -31,16 +31,6 @@ func newClient(p *Pool, name string) (*Client, error) {
 	return c, nil
 }
 
-func findClient(p *Pool, name string) *Client {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	c, ok := p.clients[name]
-	if ok {
-		return c
-	}
-	return nil
-}
-
 func (c *Client) Name() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

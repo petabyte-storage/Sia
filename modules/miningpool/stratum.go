@@ -229,6 +229,7 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	if err != nil {
 		h.p.log.Printf("Unable to parse mining.submit params: %v\n", err)
 		r.Result = json.RawMessage(`false`)
+		r.Error = json.RawMessage(`["20","Parse Error"]`)
 	}
 	name := p[0]
 	var jobID uint64
@@ -239,7 +240,7 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	h.p.log.Debugln("name = " + name + ", jobID = " + fmt.Sprintf("%X", jobID) + ", extraNonce2 = " + extraNonce2 + ", nTime = " + nTime + ", nonce = " + nonce)
 	if h.s.CurrentJob.JobID != jobID {
 		r.Result = json.RawMessage(`false`)
-		r.Error = json.RawMessage(`{"Stale"}`)
+		r.Error = json.RawMessage(`["21","Job not found"]`)
 	}
 	b := h.p.sourceBlock
 	bhNonce, err := hex.DecodeString(nonce)
@@ -264,6 +265,7 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	if err != nil {
 		h.p.log.Printf("Failed to SubmitBlock(): %v\n", err)
 		r.Result = json.RawMessage(`false`)
+		r.Error = json.RawMessage(`["20","Other/Unknown"]`)
 		h.sendResponse(r)
 		h.sendStratumNotify()
 		return

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/NebulousLabs/Sia/api"
 
@@ -52,6 +53,13 @@ Available settings:
 		Short: "List clients",
 		Long:  "List client overview, use pool client <clientname> for details",
 		Run:   wrap(poolclientscmd),
+	}
+
+	poolClientCmd = &cobra.Command{
+		Use:   "client <clientname>",
+		Short: "Get Client details",
+		Long:  "Get Client details by name",
+		Run:   wrap(poolclientcmd),
 	}
 )
 
@@ -134,12 +142,41 @@ func poolclientscmd() {
 	}
 	fmt.Printf("Clients List:\n\n")
 	fmt.Printf("Number of Clients: %d\nNumber of Workers: %d\n\n", clients.NumberOfClients, clients.NumberOfWorkers)
-	fmt.Printf("                         Client Name                             Blocks Mined\n")
+	fmt.Printf("                         Client Name                                         Blocks Mined\n")
 	for _, c := range clients.Clients {
-		fmt.Printf("% 64.64s %d\n", c.ClientName, c.BlocksMined)
+		fmt.Printf("% 76.76s %d\n", c.ClientName, c.BlocksMined)
 		fmt.Printf("     Worker Name      Last Share Time\n")
 		for _, w := range c.Workers {
-			fmt.Printf(" % -16s     %v\n", w.WorkerName, w.LastShareTime)
+			fmt.Printf(" % -16s     %v\n", w.WorkerName, shareTime(w.LastShareTime))
 		}
+	}
+}
+
+func poolclientcmd(name string) {
+	client := new(api.PoolClientInfo)
+	err := getAPI("/pool/client?name="+name, client)
+	if err != nil {
+		die("Could not get pool client:", err)
+	}
+	fmt.Printf("\nClient Name: % 76.76s\nBlocks Mined: %d\n\n", client.ClientName, client.BlocksMined)
+	fmt.Printf("                    Per Current Block           Per Current Session\n")
+	fmt.Printf("Worker Name         Shares    Stale   Invalid   Shares    Stale   Invalid     Blocks Found   Last Share Time\n")
+	for _, w := range client.Workers {
+		fmt.Printf("% -16s  % 8d % 8d  % 8d % 8d % 8d  % 8d         % 8d   %v\n",
+			w.WorkerName, w.SharesThisBlock, w.StaleSharesThisBlock, w.InvalidSharesThisBlock,
+			w.SharesThisSession, w.StaleSharesThisSession, w.InvalidSharesThisSession, w.BlocksFound,
+			shareTime(w.LastShareTime))
+	}
+
+}
+
+func shareTime(t time.Time) string {
+	if t.IsZero() {
+		return "never"
+	}
+	timeSince := time.Since(t)
+	switch timeSince {
+	default:
+		return timeSince.String() + " ago"
 	}
 }

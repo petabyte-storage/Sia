@@ -142,7 +142,7 @@ func (p *Pool) managedSubmitBlock(b types.Block) error {
 	}
 	if err != nil {
 		p.tpool.PurgeTransactionPool()
-		p.log.Critical("ERROR: an invalid block was submitted:", err)
+		p.log.Println("ERROR: an invalid block was submitted:", err)
 		return err
 	}
 	p.mu.Lock()

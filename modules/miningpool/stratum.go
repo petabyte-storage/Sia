@@ -9,7 +9,6 @@ import (
 	"hash"
 	"io"
 	"log"
-	"math/rand"
 	"net"
 	"strconv"
 	"strings"
@@ -108,7 +107,7 @@ func (h *Handler) sendResponse(r StratumResponseMsg) {
 		}
 		newline := []byte{'\n'}
 		h.conn.Write(newline)
-		h.p.log.Debugln(string(b))
+		//		h.p.log.Debugln(string(b))
 	}
 }
 func (h *Handler) sendRequest(r StratumRequestMsg) {
@@ -172,25 +171,32 @@ func (h *Handler) handleStatumAuthorize(m StratumRequestMsg) {
 			client = s[0]
 			worker = s[1]
 		}
-		c := findClient(h.p, client)
+		c := h.p.findClient(client)
 		if c == nil {
-			h.p.log.Printf("Adding new client: %s", client)
+			h.p.log.Printf("Adding new client: %s\n", client)
 			c, _ = newClient(h.p, client)
-			h.p.addClient(c)
+			h.p.AddClient(c)
+			//
+			// There is a race condition here which we can reduce/avoid by re-searching for the client once we
+			// have added it.
+			//
+			c = h.p.findClient(client)
 		}
 		if c.Worker(worker) == nil {
 			w, _ := newWorker(c, worker)
 			c.addWorker(w)
-			h.p.log.Printf("Adding new worker: %s", worker)
+			h.p.log.Printf("Adding new worker: %s\n", worker)
 		}
 		h.p.log.Debugln("client = " + client + ", worker = " + worker)
 		if c.Wallet().LoadString(c.Name()) != nil {
 			r.Result = json.RawMessage(`false`)
-			r.Error = json.RawMessage(`"Client Name must be valid wallet address"`)
+			r.Error = json.RawMessage(`{"Client Name must be valid wallet address"}`)
 			h.p.log.Println("Client Name must be valid wallet address. Client name is: " + c.Name())
 		} else {
 			h.s.addClient(c)
 			h.s.addWorker(c.Worker(worker))
+			h.s.CurrentWorker.ClearInvalidSharesThisSession()
+			h.s.CurrentWorker.ClearSharesThisSession()
 		}
 		// TODO: figure out how to store this worker - probably in Session
 	default:
@@ -224,6 +230,7 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	if err != nil {
 		h.p.log.Printf("Unable to parse mining.submit params: %v\n", err)
 		r.Result = json.RawMessage(`false`)
+		r.Error = json.RawMessage(`["20","Parse Error"]`)
 	}
 	name := p[0]
 	var jobID uint64
@@ -231,12 +238,19 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	extraNonce2 := p[2]
 	nTime := p[3]
 	nonce := p[4]
-	h.p.log.Debugln("name = " + name + ", jobID = " + fmt.Sprint(jobID) + ", extraNonce2 = " + extraNonce2 + ", nTime = " + nTime + ", nonce = " + nonce)
+	h.p.log.Debugln("name = " + name + ", jobID = " + fmt.Sprintf("%X", jobID) + ", extraNonce2 = " + extraNonce2 + ", nTime = " + nTime + ", nonce = " + nonce)
 	if h.s.CurrentJob.JobID != jobID {
 		r.Result = json.RawMessage(`false`)
-		r.Error = json.RawMessage(`Stale`)
+		r.Error = json.RawMessage(`["21","Job not found"]`)
+		h.s.CurrentWorker.IncrementInvalidSharesThisSessin()
+		h.s.CurrentWorker.IncrementInvalidSharesThisBlock()
+		h.s.CurrentWorker.IncrementStaleSharesThisSession()
+		h.s.CurrentWorker.IncrementStaleSharesThisBlock()
+		h.sendResponse(r)
+		h.sendStratumNotify()
+		return
 	}
-	b := h.p.sourceBlock
+	b := h.s.CurrentJob.Block
 	bhNonce, err := hex.DecodeString(nonce)
 	for i := range b.Nonce { // there has to be a better way to do this in golang
 		b.Nonce[i] = bhNonce[i]
@@ -253,23 +267,36 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	b.Transactions = append(b.Transactions, []types.Transaction{cointxn}...)
 	h.p.log.Debugf("BH hash is %064v\n", b.ID())
 	h.p.log.Debugf("Target is  %064x\n", h.p.persist.Target.Int())
-	h.s.CurrentWorker.IncrementSharesThisBlock()
-	h.s.CurrentWorker.IncrementSharesThisSession()
-	err = h.p.managedSubmitBlock(*b)
+	blockHash := b.ID()
+	if bytes.Compare(h.p.persist.Target[:], blockHash[:]) >= 0 {
+		h.p.log.Debugf("Block is less than target\n")
+		h.s.CurrentWorker.IncrementSharesThisBlock()
+		h.s.CurrentWorker.IncrementSharesThisSession()
+	}
+	err = h.p.managedSubmitBlock(b)
 	if err != nil {
 		h.p.log.Printf("Failed to SubmitBlock(): %v\n", err)
 		r.Result = json.RawMessage(`false`)
+		r.Error = json.RawMessage(`["20","Other/Unknown"]`)
+		h.s.CurrentWorker.IncrementInvalidSharesThisSessin()
+		h.s.CurrentWorker.IncrementInvalidSharesThisBlock()
 		h.sendResponse(r)
 		h.sendStratumNotify()
 		return
 	}
-
+	h.p.log.Printf("Yay!!! Solved a block!!\n")
+	h.s.CurrentJob = nil
 	h.sendResponse(r)
 	h.s.CurrentWorker.ClearInvalidSharesThisBlock()
 	h.s.CurrentWorker.ClearSharesThisBlock()
+	h.s.CurrentWorker.ClearStaleSharesThisBlock()
 	h.s.CurrentWorker.IncrementBlocksFound()
 	h.s.CurrentWorker.SetLastShareTime(time.Now())
+
+	h.p.mu.Lock()
 	h.p.newSourceBlock()
+	h.p.mu.Unlock()
+
 	h.sendStratumNotify()
 }
 func (h *Handler) sendStratumNotify() {
@@ -283,17 +310,18 @@ func (h *Handler) sendStratumNotify() {
 	}
 	job, _ := newJob(h.p)
 	h.s.addJob(job)
-	jobid := job.printID()
+	jobid := h.s.CurrentJob.printID()
+	job.Block = *h.p.sourceBlock // make a copy of the block and hold it until the solution is submitted
 
 	mbranch := crypto.NewTree()
 	var buf bytes.Buffer
-	for _, payout := range h.p.sourceBlock.MinerPayouts {
+	for _, payout := range job.Block.MinerPayouts {
 		payout.MarshalSia(&buf)
 		mbranch.Push(buf.Bytes())
 		buf.Reset()
 	}
 
-	for _, txn := range h.p.sourceBlock.Transactions {
+	for _, txn := range job.Block.Transactions {
 		txn.MarshalSia(&buf)
 		mbranch.Push(buf.Bytes())
 		buf.Reset()
@@ -318,17 +346,14 @@ func (h *Handler) sendStratumNotify() {
 	}
 	tr := *(*Tree)(unsafe.Pointer(mbranch))
 
+	var merkle []string
 	h.p.log.Debugf("mBranch Hash %s\n", mbranch.Root().String())
 	for st := tr.head; st != nil; st = st.next {
 		h.p.log.Debugf("Height %d Hash %x\n", st.height, st.sum)
+		merkle = append(merkle, hex.EncodeToString(st.sum))
 	}
-	var merkleBranch string
-	if tr.head.height == 0 {
-		// single leaf, so we need both this leaf and the following node in branch list
-		merkleBranch = fmt.Sprintf(`["%s","%s"]`, hex.EncodeToString(tr.head.sum), hex.EncodeToString(tr.head.next.sum))
-	} else {
-		merkleBranch = fmt.Sprintf(`["%s"]`, hex.EncodeToString(tr.head.sum))
-	}
+	mbj, _ := json.Marshal(merkle)
+	h.p.log.Debugf("merkleBranch: %s\n", mbj)
 
 	bpm, _ := bh.ParentID.MarshalJSON()
 
@@ -342,7 +367,7 @@ func (h *Handler) sendStratumNotify() {
 
 	cleanJobs := false
 	raw := fmt.Sprintf(`[ "%s", %s, "%s", "%s", %s, "%s", "%s", "%s", %t ]`,
-		jobid, string(bpm), h.p.coinB1Txn(), h.p.coinB2(), merkleBranch, version, nbits, ntime, cleanJobs)
+		jobid, string(bpm), h.p.coinB1Txn(), h.p.coinB2(), mbj, version, nbits, ntime, cleanJobs)
 	r.Params = json.RawMessage(raw)
 	h.sendRequest(r)
 }
@@ -415,10 +440,9 @@ func (d *Dispatcher) ListenHandlers(port string) {
 // newStratumID returns a function pointer to a unique ID generator used
 // for more the unique IDs within the Stratum protocol
 func (p *Pool) newStratumID() (f func() uint64) {
-	i := rand.Uint64()
 	f = func() uint64 {
-		atomic.AddUint64(&i, 1)
-		return i
+		atomic.AddUint64(&p.stratumID, 1)
+		return p.stratumID
 	}
 	return
 }
@@ -446,20 +470,9 @@ func (p *Pool) coinB1Txn() string {
 	buf := new(bytes.Buffer)
 	coinbaseTxn.MarshalSiaNoSignatures(buf)
 	b := buf.Bytes()
-	// binary.LittleEndian.PutUint64(b[144:159], binary.LittleEndian.Uint64(b[144:159])+8)
 	binary.LittleEndian.PutUint64(b[72:87], binary.LittleEndian.Uint64(b[72:87])+8)
 	return hex.EncodeToString(b)
 }
 func (p *Pool) coinB2() string {
 	return "0000000000000000"
-}
-func ConvertByte2Uint32(b []byte) []uint32 {
-	if len(b)%4 != 0 {
-		return nil
-	}
-	r := make([]uint32, len(b)/4)
-	for i := range r {
-		r[i] = *(*uint32)(unsafe.Pointer(&b[i*4]))
-	}
-	return r
 }

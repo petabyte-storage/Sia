@@ -18,8 +18,10 @@ type Worker struct {
 	parent                   *Client
 	sharesThisSession        uint64
 	invalidSharesThisSession uint64
+	staleSharesThisSession   uint64
 	sharesThisBlock          uint64
 	invalidSharesThisBlock   uint64
+	staleSharesThisBlock     uint64
 	blocksFound              uint64
 	lastShareTime            time.Time
 	currentDifficulty        types.Currency
@@ -33,8 +35,10 @@ func newWorker(c *Client, name string) (*Worker, error) {
 		parent:                   c,
 		sharesThisSession:        0,
 		invalidSharesThisSession: 0,
+		staleSharesThisSession:   0,
 		sharesThisBlock:          0,
 		invalidSharesThisBlock:   0,
+		staleSharesThisBlock:     0,
 		blocksFound:              0,
 	}
 	return w, nil
@@ -111,6 +115,25 @@ func (w *Worker) IncrementSharesThisBlock() {
 	w.sharesThisBlock++
 }
 
+func (w *Worker) InvalidSharesThisSession() uint64 {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	return w.invalidSharesThisSession
+}
+
+func (w *Worker) ClearInvalidSharesThisSession() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.invalidSharesThisSession = 0
+}
+
+func (w *Worker) IncrementInvalidSharesThisSessin() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.invalidSharesThisSession++
+}
+
 func (w *Worker) InvalidSharesThisBlock() uint64 {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
@@ -130,6 +153,43 @@ func (w *Worker) IncrementInvalidSharesThisBlock() {
 	w.invalidSharesThisBlock++
 }
 
+func (w *Worker) StaleSharesThisSession() uint64 {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	return w.staleSharesThisSession
+}
+
+func (w *Worker) ClearStaleSharesThisSession() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.staleSharesThisSession = 0
+}
+
+func (w *Worker) IncrementStaleSharesThisSession() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.staleSharesThisSession++
+}
+
+func (w *Worker) StaleSharesThisBlock() uint64 {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	return w.staleSharesThisBlock
+}
+
+func (w *Worker) ClearStaleSharesThisBlock() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.staleSharesThisBlock = 0
+}
+
+func (w *Worker) IncrementStaleSharesThisBlock() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.staleSharesThisBlock++
+}
 func (w *Worker) BlocksFound() uint64 {
 	w.mu.RLock()
 	defer w.mu.RUnlock()

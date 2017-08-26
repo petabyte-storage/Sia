@@ -8,6 +8,7 @@ package pool
 import (
 	"errors"
 	"fmt"
+	"math/rand"
 	"net"
 	"path/filepath"
 	"sync"
@@ -186,6 +187,7 @@ type Pool struct {
 	tg         siasync.ThreadGroup
 	persist    persistence
 	dispatcher *Dispatcher
+	stratumID  uint64
 }
 
 // checkUnlockHash will check that the pool has an unlock hash. If the pool
@@ -287,6 +289,7 @@ func newPool(dependencies dependencies, cs modules.ConsensusSet, tpool modules.T
 		},
 
 		persistDir: persistDir,
+		stratumID:  rand.Uint64(),
 	}
 	// TODO: Look at errors.go in modules/host directory for hints
 	// Call stop in the event of a partial startup.
@@ -466,12 +469,43 @@ func (p *Pool) AddClient(c *Client) {
 
 	p.clients[c.Name()] = c
 }
-func (p *Pool) FindClient(name string) *Client {
+
+func (p *Pool) findClient(name string) *Client {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	c, ok := p.clients[name]
 	if ok {
 		return c
+	}
+	return nil
+}
+
+func (p *Pool) FindClient(name string) *modules.PoolClients {
+	c := p.findClient(name)
+	if c != nil {
+		cbf := uint64(0)
+		var pw []modules.PoolWorkers
+		for wn, w := range c.Workers() {
+			worker := modules.PoolWorkers{
+				WorkerName:               wn,
+				LastShareTime:            w.LastShareTime(),
+				SharesThisSession:        w.SharesThisSession(),
+				InvalidSharesThisSession: w.InvalidSharesThisSession(),
+				StaleSharesThisSession:   w.StaleSharesThisSession(),
+				SharesThisBlock:          w.SharesThisBlock(),
+				InvalidSharesThisBlock:   w.InvalidSharesThisBlock(),
+				StaleSharesThisBlock:     w.StaleSharesThisBlock(),
+				BlocksFound:              w.BlocksFound(),
+			}
+			cbf += w.BlocksFound()
+			pw = append(pw, worker)
+		}
+		client := modules.PoolClients{
+			ClientName:  name,
+			BlocksMined: cbf,
+			Workers:     pw,
+		}
+		return &client
 	}
 	return nil
 }
@@ -483,8 +517,15 @@ func (p *Pool) ClientData() []modules.PoolClients {
 		var pw []modules.PoolWorkers
 		for wn, w := range c.Workers() {
 			worker := modules.PoolWorkers{
-				WorkerName:    wn,
-				LastShareTime: w.LastShareTime(),
+				WorkerName:               wn,
+				LastShareTime:            w.LastShareTime(),
+				SharesThisSession:        w.SharesThisSession(),
+				InvalidSharesThisSession: w.InvalidSharesThisSession(),
+				StaleSharesThisSession:   w.StaleSharesThisSession(),
+				SharesThisBlock:          w.SharesThisBlock(),
+				InvalidSharesThisBlock:   w.InvalidSharesThisBlock(),
+				StaleSharesThisBlock:     w.StaleSharesThisBlock(),
+				BlocksFound:              w.BlocksFound(),
 			}
 			cbf += w.BlocksFound()
 			pw = append(pw, worker)

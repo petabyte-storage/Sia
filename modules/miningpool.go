@@ -36,9 +36,15 @@ type (
 	}
 
 	PoolWorkers struct {
-		WorkerName      string    `json:"workername"`
-		SharesSubmitted uint64    `json:"sharessubmitted"`
-		LastShareTime   time.Time `json:"lastsharetime"`
+		WorkerName               string    `json:"workername"`
+		LastShareTime            time.Time `json:"lastsharetime"`
+		SharesThisSession        uint64    `json:"sharesthissession"`
+		InvalidSharesThisSession uint64    `json:"invalidsharesthissession"`
+		StaleSharesThisSession   uint64    `json:"stalesharesthissession"`
+		SharesThisBlock          uint64    `json:"sharesthisblock"`
+		InvalidSharesThisBlock   uint64    `json:"invalidsharesthisblock"`
+		StaleSharesThisBlock     uint64    `json:"stalesharesthisblock"`
+		BlocksFound              uint64    `json:"blocksfound"`
 	}
 
 	// PoolWorkingStatus reports the working state of a pool. Can be one of
@@ -66,6 +72,9 @@ type (
 
 		// ClientData returns a pointer to the client list
 		ClientData() []PoolClients
+
+		// FindClient returns a Client pointer or nil if the client name doesn't exist
+		FindClient(name string) *PoolClients
 
 		// Close closes the Pool.
 		Close() error

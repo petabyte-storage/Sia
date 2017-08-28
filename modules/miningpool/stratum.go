@@ -245,9 +245,18 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	nonce := p[4]
 	h.s.CurrentWorker.SetLastShareTime(time.Now())
 	h.p.log.Debugln("name = " + name + ", jobID = " + fmt.Sprintf("%X", jobID) + ", extraNonce2 = " + extraNonce2 + ", nTime = " + nTime + ", nonce = " + nonce)
-	if h.s.CurrentJob == nil || h.s.CurrentJob.JobID != jobID {
+
+	if h.s.CurrentJob == nil || // job just finished
+		h.s.CurrentJob.JobID != jobID || // job is old/stale
+		h.p.sourceBlock.MerkleRoot() != h.s.CurrentJob.MerkleRoot { //block changed since job started
+		if h.s.CurrentJob == nil {
+			r.Error = json.RawMessage(`["21","Stale - Job just finished"]`)
+		} else if h.s.CurrentJob.JobID != jobID {
+			r.Error = json.RawMessage(`["21","Stale - old/unknown job"]`)
+		} else if h.p.sourceBlock.MerkleRoot() != h.s.CurrentJob.MerkleRoot {
+			r.Error = json.RawMessage(`["21","Stale - block changed"]`)
+		}
 		r.Result = json.RawMessage(`false`)
-		r.Error = json.RawMessage(`["21","Stale"]`)
 		h.s.CurrentWorker.IncrementInvalidSharesThisSessin()
 		h.s.CurrentWorker.IncrementInvalidSharesThisBlock()
 		h.s.CurrentWorker.IncrementStaleSharesThisSession()
@@ -308,16 +317,12 @@ func (h *Handler) sendStratumNotify() {
 	var r StratumRequestMsg
 	r.Method = "mining.notify"
 	r.ID = 1 // assuming this ID is the response to the original subscribe which appears to be a 1
-	h.p.HeaderForWork()
-	// if err != nil {
-	// 	h.p.log.Println("Error getting header for work: ", err)
-	// 	return
-	// }
 	job, _ := newJob(h.p)
 	h.s.addJob(job)
 	jobid := h.s.CurrentJob.printID()
 	h.p.mu.RLock()
 	job.Block = *h.p.sourceBlock // make a copy of the block and hold it until the solution is submitted
+	job.MerkleRoot = h.p.sourceBlock.MerkleRoot()
 	h.p.mu.RUnlock()
 	mbranch := crypto.NewTree()
 	var buf bytes.Buffer

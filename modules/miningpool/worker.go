@@ -7,6 +7,10 @@ import (
 	"github.com/NebulousLabs/Sia/types"
 )
 
+const (
+	numSharesToAverage = 20
+)
+
 //
 // A Worker is an instance of one miner.  A Client often represents a user and the worker represents a single miner.  There
 // is a one to many client worker relationship
@@ -23,7 +27,8 @@ type Worker struct {
 	invalidSharesThisBlock   uint64
 	staleSharesThisBlock     uint64
 	blocksFound              uint64
-	lastShareTime            time.Time
+	shareTimes               [numSharesToAverage]time.Time
+	lastShareTime            uint8
 	currentDifficulty        types.Currency
 }
 
@@ -213,11 +218,32 @@ func (w *Worker) LastShareTime() time.Time {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 
-	return w.lastShareTime
+	return w.shareTimes[w.lastShareTime]
 }
 
 func (w *Worker) SetLastShareTime(t time.Time) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.lastShareTime = t
+	w.lastShareTime++
+	if w.lastShareTime == numSharesToAverage {
+		w.lastShareTime = 0
+	}
+	//	fmt.Printf("Shares per minute: %.2f\n", w.ShareRate()*60)
+	w.shareTimes[w.lastShareTime] = t
+}
+
+// ShareRate returns shares per second
+func (w *Worker) ShareRate() float32 {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	oldestTime := time.Now()
+	for _, e := range w.shareTimes {
+		if e.Before(oldestTime) {
+			oldestTime = e
+		}
+	}
+	howLong := time.Now().Sub(oldestTime)
+	return float32(numSharesToAverage / howLong.Seconds())
+
 }

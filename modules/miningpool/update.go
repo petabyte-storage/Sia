@@ -242,6 +242,11 @@ func (p *Pool) ProcessConsensusChange(cc modules.ConsensusChange) {
 	// the stale rate as low as possible.
 	if cc.Synced {
 		p.newSourceBlock()
+		if p.dispatcher != nil {
+			//			p.mu.Unlock()
+			go p.dispatcher.NotifyClients()
+			//			p.mu.Lock()
+		}
 	}
 	p.persist.RecentChange = cc.ID
 }

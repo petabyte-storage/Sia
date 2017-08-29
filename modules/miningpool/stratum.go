@@ -45,6 +45,7 @@ type StratumResponseMsg struct {
 type Handler struct {
 	conn   net.Conn
 	closed chan bool
+	notify chan bool
 	p      *Pool
 	s      *Session
 }
@@ -70,6 +71,8 @@ func (h *Handler) Listen() { // listen connection for incomming data
 		case <-h.p.tg.StopChan():
 			h.closed <- true // not closed until we return but we signal now so our parent knows
 			return
+		case <-h.notify:
+			m.Method = "mining.notify"
 		default:
 			err := dec.Decode(&m)
 			if err != nil {
@@ -90,6 +93,8 @@ func (h *Handler) Listen() { // listen connection for incomming data
 			h.handleStratumNonceSubscribe(m)
 		case "mining.submit":
 			h.handleStratumSubmit(m)
+		case "mining.notify":
+			h.sendStratumNotify()
 		default:
 			h.p.log.Debugln("Unknown stratum method: ", m.Method)
 		}
@@ -238,10 +243,20 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	extraNonce2 := p[2]
 	nTime := p[3]
 	nonce := p[4]
+	h.s.CurrentWorker.SetLastShareTime(time.Now())
 	h.p.log.Debugln("name = " + name + ", jobID = " + fmt.Sprintf("%X", jobID) + ", extraNonce2 = " + extraNonce2 + ", nTime = " + nTime + ", nonce = " + nonce)
-	if h.s.CurrentJob.JobID != jobID {
+
+	if h.s.CurrentJob == nil || // job just finished
+		h.s.CurrentJob.JobID != jobID || // job is old/stale
+		h.p.sourceBlock.MerkleRoot() != h.s.CurrentJob.MerkleRoot { //block changed since job started
+		if h.s.CurrentJob == nil {
+			r.Error = json.RawMessage(`["21","Stale - Job just finished"]`)
+		} else if h.s.CurrentJob.JobID != jobID {
+			r.Error = json.RawMessage(`["21","Stale - old/unknown job"]`)
+		} else if h.p.sourceBlock.MerkleRoot() != h.s.CurrentJob.MerkleRoot {
+			r.Error = json.RawMessage(`["21","Stale - block changed"]`)
+		}
 		r.Result = json.RawMessage(`false`)
-		r.Error = json.RawMessage(`["21","Job not found"]`)
 		h.s.CurrentWorker.IncrementInvalidSharesThisSessin()
 		h.s.CurrentWorker.IncrementInvalidSharesThisBlock()
 		h.s.CurrentWorker.IncrementStaleSharesThisSession()
@@ -250,7 +265,7 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 		h.sendStratumNotify()
 		return
 	}
-	b := h.s.CurrentJob.Block
+	b := h.s.CurrentJob.Block // copying the block takes time - of course if it changes right away, this job becomes stale
 	bhNonce, err := hex.DecodeString(nonce)
 	for i := range b.Nonce { // there has to be a better way to do this in golang
 		b.Nonce[i] = bhNonce[i]
@@ -281,7 +296,7 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 		h.s.CurrentWorker.IncrementInvalidSharesThisSessin()
 		h.s.CurrentWorker.IncrementInvalidSharesThisBlock()
 		h.sendResponse(r)
-		h.sendStratumNotify()
+		//		h.sendStratumNotify()
 		return
 	}
 	h.p.log.Printf("Yay!!! Solved a block!!\n")
@@ -291,28 +306,24 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	h.s.CurrentWorker.ClearSharesThisBlock()
 	h.s.CurrentWorker.ClearStaleSharesThisBlock()
 	h.s.CurrentWorker.IncrementBlocksFound()
-	h.s.CurrentWorker.SetLastShareTime(time.Now())
 
-	h.p.mu.Lock()
-	h.p.newSourceBlock()
-	h.p.mu.Unlock()
+	// h.p.mu.Lock()
+	// h.p.newSourceBlock()
+	// h.p.mu.Unlock()
 
-	h.sendStratumNotify()
+	//	h.sendStratumNotify()
 }
 func (h *Handler) sendStratumNotify() {
 	var r StratumRequestMsg
 	r.Method = "mining.notify"
 	r.ID = 1 // assuming this ID is the response to the original subscribe which appears to be a 1
-	bh, _, err := h.p.HeaderForWork()
-	if err != nil {
-		h.p.log.Println("Error getting header for work: ", err)
-		return
-	}
 	job, _ := newJob(h.p)
 	h.s.addJob(job)
 	jobid := h.s.CurrentJob.printID()
+	h.p.mu.RLock()
 	job.Block = *h.p.sourceBlock // make a copy of the block and hold it until the solution is submitted
-
+	job.MerkleRoot = h.p.sourceBlock.MerkleRoot()
+	h.p.mu.RUnlock()
 	mbranch := crypto.NewTree()
 	var buf bytes.Buffer
 	for _, payout := range job.Block.MinerPayouts {
@@ -355,14 +366,14 @@ func (h *Handler) sendStratumNotify() {
 	mbj, _ := json.Marshal(merkle)
 	h.p.log.Debugf("merkleBranch: %s\n", mbj)
 
-	bpm, _ := bh.ParentID.MarshalJSON()
+	bpm, _ := job.Block.ParentID.MarshalJSON()
 
 	version := ""
 
 	nbits := "1a08645a"
 
 	buf.Reset()
-	encoding.WriteUint64(&buf, uint64(bh.Timestamp))
+	encoding.WriteUint64(&buf, uint64(job.Block.Timestamp))
 	ntime := hex.EncodeToString(buf.Bytes())
 
 	cleanJobs := false
@@ -383,7 +394,7 @@ type Dispatcher struct {
 //AddHandler connects the incoming connection to the handler which will handle it
 func (d *Dispatcher) AddHandler(conn net.Conn) {
 	addr := conn.RemoteAddr().String()
-	handler := &Handler{conn, make(chan bool, 1), d.p, nil}
+	handler := &Handler{conn, make(chan bool, 1), make(chan bool, 1), d.p, nil}
 	d.mu.Lock()
 	d.handlers[addr] = handler
 	d.mu.Unlock()
@@ -434,6 +445,15 @@ func (d *Dispatcher) ListenHandlers(port string) {
 		tcpconn.SetKeepAlivePeriod(10 * time.Second)
 
 		go d.AddHandler(conn)
+	}
+}
+
+func (d *Dispatcher) NotifyClients() {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	d.p.log.Debugf("Notifying %d clients\n", len(d.handlers))
+	for _, h := range d.handlers {
+		h.notify <- true
 	}
 }
 

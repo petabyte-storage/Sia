@@ -356,6 +356,8 @@ func newPool(dependencies dependencies, cs modules.ConsensusSet, tpool modules.T
 	fmt.Println("      Starting Stratum Server")
 
 	p.dispatcher = &Dispatcher{handlers: make(map[string]*Handler), mu: sync.RWMutex{}, p: p}
+	p.dispatcher.log, err = dependencies.newLogger(filepath.Join(p.persistDir, "stratum.log"))
+
 	// la := modules.NetAddress(listenerAddress)
 	// p.dispatcher.ListenHandlers(la.Port())
 	port := fmt.Sprintf("%d", p.InternalSettings().PoolNetworkPort)

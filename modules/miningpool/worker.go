@@ -1,9 +1,11 @@
 package pool
 
 import (
+	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/NebulousLabs/Sia/persist"
 	"github.com/NebulousLabs/Sia/types"
 )
 
@@ -30,10 +32,12 @@ type Worker struct {
 	shareTimes               [numSharesToAverage]time.Time
 	lastShareTime            uint8
 	currentDifficulty        types.Currency
+	log                      *persist.Logger
 }
 
 func newWorker(c *Client, name string) (*Worker, error) {
-	id := c.Pool().newStratumID()
+	p := c.Pool()
+	id := p.newStratumID()
 	w := &Worker{
 		workerID:                 id(),
 		name:                     name,
@@ -45,7 +49,20 @@ func newWorker(c *Client, name string) (*Worker, error) {
 		invalidSharesThisBlock:   0,
 		staleSharesThisBlock:     0,
 		blocksFound:              0,
+		currentDifficulty:        types.NewCurrency64(4200000000),
 	}
+	var err error
+	// Create the perist directory if it does not yet exist.
+	dirname := filepath.Join(p.persistDir, "clients", c.Name())
+	err = p.dependencies.mkdirAll(dirname, 0700)
+	if err != nil {
+		return nil, err
+	}
+
+	// Initialize the logger, and set up the stop call that will close the
+	// logger.
+	w.log, err = p.dependencies.newLogger(filepath.Join(dirname, name+".log"))
+
 	return w, nil
 }
 
@@ -246,4 +263,16 @@ func (w *Worker) ShareRate() float32 {
 	howLong := time.Now().Sub(oldestTime)
 	return float32(numSharesToAverage / howLong.Seconds())
 
+}
+
+func (w *Worker) CurrentDifficulty() types.Currency {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.currentDifficulty
+}
+
+func (w *Worker) SetCurrentDifficulty(d types.Currency) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.currentDifficulty = d
 }

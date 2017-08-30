@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"log"
 	"net"
 	"strconv"
 	"strings"
@@ -20,6 +19,7 @@ import (
 	"github.com/NebulousLabs/Sia/crypto"
 	"github.com/NebulousLabs/Sia/encoding"
 	"github.com/NebulousLabs/Sia/modules"
+	"github.com/NebulousLabs/Sia/persist"
 	"github.com/NebulousLabs/Sia/types"
 )
 
@@ -47,6 +47,7 @@ type Handler struct {
 	closed chan bool
 	notify chan bool
 	p      *Pool
+	log    *persist.Logger
 	s      *Session
 }
 
@@ -61,9 +62,9 @@ func (h *Handler) Listen() { // listen connection for incomming data
 	}
 	defer h.p.tg.Done()
 
-	h.p.log.Println("New connection from " + h.conn.RemoteAddr().String())
+	h.log.Println("New connection from " + h.conn.RemoteAddr().String())
 	h.s, _ = newSession(h.p)
-	h.p.log.Println("New sessioon: " + sPrintID(h.s.SessionID))
+	h.log.Println("New sessioon: " + sPrintID(h.s.SessionID))
 	dec := json.NewDecoder(h.conn)
 	for {
 		var m StratumRequestMsg
@@ -77,7 +78,7 @@ func (h *Handler) Listen() { // listen connection for incomming data
 			err := dec.Decode(&m)
 			if err != nil {
 				if err == io.EOF {
-					h.p.log.Println("End connection")
+					h.log.Println("End connection")
 				}
 				h.closed <- true // send to dispatcher, that connection is closed
 				return
@@ -96,7 +97,7 @@ func (h *Handler) Listen() { // listen connection for incomming data
 		case "mining.notify":
 			h.sendStratumNotify()
 		default:
-			h.p.log.Debugln("Unknown stratum method: ", m.Method)
+			h.log.Debugln("Unknown stratum method: ", m.Method)
 		}
 	}
 }
@@ -104,29 +105,29 @@ func (h *Handler) Listen() { // listen connection for incomming data
 func (h *Handler) sendResponse(r StratumResponseMsg) {
 	b, err := json.Marshal(r)
 	if err != nil {
-		h.p.log.Debugln("json marshal failed for id: ", r.ID, err)
+		h.log.Debugln("json marshal failed for id: ", r.ID, err)
 	} else {
 		_, err = h.conn.Write(b)
 		if err != nil {
-			h.p.log.Debugln("connection write failed for id: ", r.ID, err)
+			h.log.Debugln("connection write failed for id: ", r.ID, err)
 		}
 		newline := []byte{'\n'}
 		h.conn.Write(newline)
-		//		h.p.log.Debugln(string(b))
+		//		h.log.Debugln(string(b))
 	}
 }
 func (h *Handler) sendRequest(r StratumRequestMsg) {
 	b, err := json.Marshal(r)
 	if err != nil {
-		h.p.log.Debugln("json marshal failed for id: ", r.ID, err)
+		h.log.Debugln("json marshal failed for id: ", r.ID, err)
 	} else {
 		_, err = h.conn.Write(b)
 		if err != nil {
-			h.p.log.Debugln("connection write failed for id: ", r.ID, err)
+			h.log.Debugln("connection write failed for id: ", r.ID, err)
 		}
 		newline := []byte{'\n'}
 		h.conn.Write(newline)
-		h.p.log.Debugln(string(b))
+		h.log.Debugln(string(b))
 	}
 }
 
@@ -166,7 +167,7 @@ func (h *Handler) handleStatumAuthorize(m StratumRequestMsg) {
 		//		p := new([]params)
 		err := json.Unmarshal(m.Params, &p)
 		if err != nil {
-			h.p.log.Printf("Unable to parse mining.authorize params: %v\n", err)
+			h.log.Printf("Unable to parse mining.authorize params: %v\n", err)
 			r.Result = json.RawMessage(`false`)
 		}
 		client := p[0]
@@ -178,8 +179,8 @@ func (h *Handler) handleStatumAuthorize(m StratumRequestMsg) {
 		}
 		c := h.p.findClient(client)
 		if c == nil {
-			h.p.log.Printf("Adding new client: %s\n", client)
 			c, _ = newClient(h.p, client)
+			c.log.Printf("Adding new client: %s\n", client)
 			h.p.AddClient(c)
 			//
 			// There is a race condition here which we can reduce/avoid by re-searching for the client once we
@@ -190,22 +191,25 @@ func (h *Handler) handleStatumAuthorize(m StratumRequestMsg) {
 		if c.Worker(worker) == nil {
 			w, _ := newWorker(c, worker)
 			c.addWorker(w)
-			h.p.log.Printf("Adding new worker: %s\n", worker)
+			c.log.Printf("Adding new worker: %s\n", worker)
+			w.log.Printf("Adding new worker: %s\n", worker)
 		}
-		h.p.log.Debugln("client = " + client + ", worker = " + worker)
+		h.log.Debugln("client = " + client + ", worker = " + worker)
 		if c.Wallet().LoadString(c.Name()) != nil {
 			r.Result = json.RawMessage(`false`)
 			r.Error = json.RawMessage(`{"Client Name must be valid wallet address"}`)
-			h.p.log.Println("Client Name must be valid wallet address. Client name is: " + c.Name())
+			h.log.Println("Client Name must be valid wallet address. Client name is: " + c.Name())
 		} else {
 			h.s.addClient(c)
 			h.s.addWorker(c.Worker(worker))
+			h.s.CurrentWorker.log.Printf("Clearing share stats\n")
 			h.s.CurrentWorker.ClearInvalidSharesThisSession()
+			h.s.CurrentWorker.ClearStaleSharesThisSession()
 			h.s.CurrentWorker.ClearSharesThisSession()
 		}
 		// TODO: figure out how to store this worker - probably in Session
 	default:
-		h.p.log.Debugln("Unknown stratum method: ", m.Method)
+		h.log.Debugln("Unknown stratum method: ", m.Method)
 		r.Result = json.RawMessage(`false`)
 	}
 
@@ -233,7 +237,7 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	r.Error = json.RawMessage(`null`)
 	err := json.Unmarshal(m.Params, &p)
 	if err != nil {
-		h.p.log.Printf("Unable to parse mining.submit params: %v\n", err)
+		h.log.Printf("Unable to parse mining.submit params: %v\n", err)
 		r.Result = json.RawMessage(`false`)
 		r.Error = json.RawMessage(`["20","Parse Error"]`)
 	}
@@ -244,17 +248,20 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	nTime := p[3]
 	nonce := p[4]
 	h.s.CurrentWorker.SetLastShareTime(time.Now())
-	h.p.log.Debugln("name = " + name + ", jobID = " + fmt.Sprintf("%X", jobID) + ", extraNonce2 = " + extraNonce2 + ", nTime = " + nTime + ", nonce = " + nonce)
+	h.log.Debugln("name = " + name + ", jobID = " + fmt.Sprintf("%X", jobID) + ", extraNonce2 = " + extraNonce2 + ", nTime = " + nTime + ", nonce = " + nonce)
 
 	if h.s.CurrentJob == nil || // job just finished
 		h.s.CurrentJob.JobID != jobID || // job is old/stale
 		h.p.sourceBlock.MerkleRoot() != h.s.CurrentJob.MerkleRoot { //block changed since job started
 		if h.s.CurrentJob == nil {
 			r.Error = json.RawMessage(`["21","Stale - Job just finished"]`)
+			h.s.CurrentWorker.log.Printf("Stale Share rejected - Job just finished\n")
 		} else if h.s.CurrentJob.JobID != jobID {
 			r.Error = json.RawMessage(`["21","Stale - old/unknown job"]`)
+			h.s.CurrentWorker.log.Printf("Stale Share rejected - old/unknown job\n")
 		} else if h.p.sourceBlock.MerkleRoot() != h.s.CurrentJob.MerkleRoot {
 			r.Error = json.RawMessage(`["21","Stale - block changed"]`)
+			h.s.CurrentWorker.log.Printf("Stale Share rejected - block changed\n")
 		}
 		r.Result = json.RawMessage(`false`)
 		h.s.CurrentWorker.IncrementInvalidSharesThisSessin()
@@ -262,9 +269,10 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 		h.s.CurrentWorker.IncrementStaleSharesThisSession()
 		h.s.CurrentWorker.IncrementStaleSharesThisBlock()
 		h.sendResponse(r)
-		h.sendStratumNotify()
+		// h.sendStratumNotify()
 		return
 	}
+	h.s.CurrentWorker.log.Printf("Share Accepted\n")
 	b := h.s.CurrentJob.Block // copying the block takes time - of course if it changes right away, this job becomes stale
 	bhNonce, err := hex.DecodeString(nonce)
 	for i := range b.Nonce { // there has to be a better way to do this in golang
@@ -280,17 +288,17 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	cointxn.ArbitraryData[0] = append(cointxn.ArbitraryData[0], ex2...)
 
 	b.Transactions = append(b.Transactions, []types.Transaction{cointxn}...)
-	h.p.log.Debugf("BH hash is %064v\n", b.ID())
-	h.p.log.Debugf("Target is  %064x\n", h.p.persist.Target.Int())
+	h.s.CurrentWorker.log.Debugf("BH hash is %064v\n", b.ID())
+	h.s.CurrentWorker.log.Debugf("Target is  %064x\n", h.p.persist.Target.Int())
 	blockHash := b.ID()
 	if bytes.Compare(h.p.persist.Target[:], blockHash[:]) >= 0 {
-		h.p.log.Debugf("Block is less than target\n")
+		h.s.CurrentWorker.log.Debugf("Block is less than target\n")
 		h.s.CurrentWorker.IncrementSharesThisBlock()
 		h.s.CurrentWorker.IncrementSharesThisSession()
 	}
 	err = h.p.managedSubmitBlock(b)
 	if err != nil {
-		h.p.log.Printf("Failed to SubmitBlock(): %v\n", err)
+		h.log.Printf("Failed to SubmitBlock(): %v\n", err)
 		r.Result = json.RawMessage(`false`)
 		r.Error = json.RawMessage(`["20","Other/Unknown"]`)
 		h.s.CurrentWorker.IncrementInvalidSharesThisSessin()
@@ -299,7 +307,8 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 		//		h.sendStratumNotify()
 		return
 	}
-	h.p.log.Printf("Yay!!! Solved a block!!\n")
+	h.s.CurrentWorker.Parent().log.Printf("Yay!!! Solved a block!!\n")
+	h.s.CurrentWorker.log.Printf("Yay!!! Solved a block!!\n")
 	h.s.CurrentJob = nil
 	h.sendResponse(r)
 	h.s.CurrentWorker.ClearInvalidSharesThisBlock()
@@ -358,13 +367,13 @@ func (h *Handler) sendStratumNotify() {
 	tr := *(*Tree)(unsafe.Pointer(mbranch))
 
 	var merkle []string
-	h.p.log.Debugf("mBranch Hash %s\n", mbranch.Root().String())
+	//	h.log.Debugf("mBranch Hash %s\n", mbranch.Root().String())
 	for st := tr.head; st != nil; st = st.next {
-		h.p.log.Debugf("Height %d Hash %x\n", st.height, st.sum)
+		//		h.log.Debugf("Height %d Hash %x\n", st.height, st.sum)
 		merkle = append(merkle, hex.EncodeToString(st.sum))
 	}
 	mbj, _ := json.Marshal(merkle)
-	h.p.log.Debugf("merkleBranch: %s\n", mbj)
+	//	h.log.Debugf("merkleBranch: %s\n", mbj)
 
 	bpm, _ := job.Block.ParentID.MarshalJSON()
 
@@ -376,7 +385,7 @@ func (h *Handler) sendStratumNotify() {
 	encoding.WriteUint64(&buf, uint64(job.Block.Timestamp))
 	ntime := hex.EncodeToString(buf.Bytes())
 
-	cleanJobs := false
+	cleanJobs := true
 	raw := fmt.Sprintf(`[ "%s", %s, "%s", "%s", %s, "%s", "%s", "%s", %t ]`,
 		jobid, string(bpm), h.p.coinB1Txn(), h.p.coinB2(), mbj, version, nbits, ntime, cleanJobs)
 	r.Params = json.RawMessage(raw)
@@ -389,12 +398,13 @@ type Dispatcher struct {
 	ln       net.Listener
 	mu       sync.RWMutex
 	p        *Pool
+	log      *persist.Logger
 }
 
 //AddHandler connects the incoming connection to the handler which will handle it
 func (d *Dispatcher) AddHandler(conn net.Conn) {
 	addr := conn.RemoteAddr().String()
-	handler := &Handler{conn, make(chan bool, 1), make(chan bool, 1), d.p, nil}
+	handler := &Handler{conn, make(chan bool, 1), make(chan bool, 1), d.p, d.log, nil}
 	d.mu.Lock()
 	d.handlers[addr] = handler
 	d.mu.Unlock()
@@ -412,7 +422,7 @@ func (d *Dispatcher) ListenHandlers(port string) {
 	var err error
 	d.ln, err = net.Listen("tcp", ":"+port)
 	if err != nil {
-		log.Println(err)
+		d.log.Println(err)
 		return
 	}
 
@@ -435,7 +445,7 @@ func (d *Dispatcher) ListenHandlers(port string) {
 		default:
 			conn, err = d.ln.Accept() // accept connection
 			if err != nil {
-				//				log.Println(err)
+				d.log.Println(err)
 				continue
 			}
 		}
@@ -451,7 +461,7 @@ func (d *Dispatcher) ListenHandlers(port string) {
 func (d *Dispatcher) NotifyClients() {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	d.p.log.Debugf("Notifying %d clients\n", len(d.handlers))
+	d.log.Debugf("Notifying %d clients\n", len(d.handlers))
 	for _, h := range d.handlers {
 		h.notify <- true
 	}

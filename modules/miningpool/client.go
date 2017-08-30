@@ -1,8 +1,10 @@
 package pool
 
 import (
+	"path/filepath"
 	"sync"
 
+	"github.com/NebulousLabs/Sia/persist"
 	"github.com/NebulousLabs/Sia/types"
 )
 
@@ -16,11 +18,13 @@ type Client struct {
 	name     string
 	wallet   types.UnlockHash
 	pool     *Pool
+	log      *persist.Logger
 	workers  map[string]*Worker //worker name to worker pointer mapping
 }
 
 // newClient creates a new Client record
 func newClient(p *Pool, name string) (*Client, error) {
+	var err error
 	id := p.newStratumID()
 	c := &Client{
 		clientID: id(),
@@ -28,7 +32,18 @@ func newClient(p *Pool, name string) (*Client, error) {
 		pool:     p,
 		workers:  make(map[string]*Worker),
 	}
-	return c, nil
+	// Create the perist directory if it does not yet exist.
+	dirname := filepath.Join(p.persistDir, "clients", name)
+	err = p.dependencies.mkdirAll(dirname, 0700)
+	if err != nil {
+		return nil, err
+	}
+
+	// Initialize the logger, and set up the stop call that will close the
+	// logger.
+	c.log, err = p.dependencies.newLogger(filepath.Join(dirname, "client.log"))
+
+	return c, err
 }
 
 func (c *Client) Name() string {

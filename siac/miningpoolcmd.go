@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/NebulousLabs/Sia/api"
 
@@ -147,7 +146,7 @@ func poolclientscmd() {
 		fmt.Printf("% 76.76s %d\n", c.ClientName, c.BlocksMined)
 		fmt.Printf("     Worker Name      Last Share Time\n")
 		for _, w := range c.Workers {
-			fmt.Printf(" % -16s     %v\n", w.WorkerName, shareTime(w.LastShareTime))
+			fmt.Printf(" % -16s     %v\n", w.WorkerName, shareTime(w.LastShareDuration))
 		}
 	}
 }
@@ -165,18 +164,18 @@ func poolclientcmd(name string) {
 		fmt.Printf("% -16s  % 8d % 8d  % 8d % 8d % 8d  % 8d         % 8d   %v\n",
 			w.WorkerName, w.SharesThisBlock, w.StaleSharesThisBlock, w.InvalidSharesThisBlock,
 			w.SharesThisSession, w.StaleSharesThisSession, w.InvalidSharesThisSession, w.BlocksFound,
-			shareTime(w.LastShareTime))
+			shareTime(w.LastShareDuration))
 	}
 
 }
 
-func shareTime(t time.Time) string {
-	if t.IsZero() {
-		return "never"
+func shareTime(t float64) string {
+	if t == 0 {
+		return "now"
 	}
-	timeSince := time.Since(t)
-	switch timeSince {
+
+	switch t {
 	default:
-		return timeSince.String() + " ago"
+		return fmt.Sprintf(" %.2f seconds ago", t)
 	}
 }

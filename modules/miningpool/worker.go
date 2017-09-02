@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/NebulousLabs/Sia/persist"
-	"github.com/NebulousLabs/Sia/types"
 )
 
 const (
@@ -29,10 +28,13 @@ type Worker struct {
 	invalidSharesThisBlock   uint64
 	staleSharesThisBlock     uint64
 	blocksFound              uint64
-	shareTimes               [numSharesToAverage]time.Time
-	lastShareTime            uint8
-	currentDifficulty        types.Currency
+	shareTimes               [numSharesToAverage]float64
+	lastShareSpot            uint64
+	currentDifficulty        float64
+	vardiff                  Vardiff
 	log                      *persist.Logger
+	lastVardiffRetarget      time.Time
+	lastVardiffTimestamp     time.Time
 }
 
 func newWorker(c *Client, name string) (*Worker, error) {
@@ -49,8 +51,11 @@ func newWorker(c *Client, name string) (*Worker, error) {
 		invalidSharesThisBlock:   0,
 		staleSharesThisBlock:     0,
 		blocksFound:              0,
-		currentDifficulty:        types.NewCurrency64(4200000000),
+		currentDifficulty:        4.0,
 	}
+
+	w.vardiff = *w.newVardiff()
+
 	var err error
 	// Create the perist directory if it does not yet exist.
 	dirname := filepath.Join(p.persistDir, "clients", c.Name())
@@ -231,47 +236,39 @@ func (w *Worker) IncrementBlocksFound() {
 	w.blocksFound++
 }
 
-func (w *Worker) LastShareTime() time.Time {
+func (w *Worker) LastShareDuration() float64 {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 
-	return w.shareTimes[w.lastShareTime]
+	return w.shareTimes[w.lastShareSpot]
 }
 
-func (w *Worker) SetLastShareTime(t time.Time) {
+func (w *Worker) SetLastShareDuration(seconds float64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.lastShareTime++
-	if w.lastShareTime == numSharesToAverage {
-		w.lastShareTime = 0
+	w.lastShareSpot++
+	if w.lastShareSpot == w.vardiff.bufSize {
+		w.lastShareSpot = 0
 	}
 	//	fmt.Printf("Shares per minute: %.2f\n", w.ShareRate()*60)
-	w.shareTimes[w.lastShareTime] = t
+	w.shareTimes[w.lastShareSpot] = seconds
 }
 
-// ShareRate returns shares per second
-func (w *Worker) ShareRate() float32 {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-
-	oldestTime := time.Now()
-	for _, e := range w.shareTimes {
-		if e.Before(oldestTime) {
-			oldestTime = e
-		}
+func (w *Worker) ShareDurationAverage() float64 {
+	var average float64
+	for i := uint64(0); i < w.vardiff.bufSize; i++ {
+		average += w.shareTimes[i]
 	}
-	howLong := time.Now().Sub(oldestTime)
-	return float32(numSharesToAverage / howLong.Seconds())
-
+	return average / float64(w.vardiff.bufSize)
 }
 
-func (w *Worker) CurrentDifficulty() types.Currency {
+func (w *Worker) CurrentDifficulty() float64 {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return w.currentDifficulty
 }
 
-func (w *Worker) SetCurrentDifficulty(d types.Currency) {
+func (w *Worker) SetCurrentDifficulty(d float64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.currentDifficulty = d

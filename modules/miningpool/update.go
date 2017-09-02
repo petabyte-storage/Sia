@@ -241,11 +241,11 @@ func (p *Pool) ProcessConsensusChange(cc modules.ConsensusChange) {
 	// There is a new parent block, the source block should be updated to keep
 	// the stale rate as low as possible.
 	if cc.Synced {
+		p.log.Printf("Consensus change detected\n")
 		p.newSourceBlock()
 		if p.dispatcher != nil {
-			//			p.mu.Unlock()
-			go p.dispatcher.NotifyClients()
-			//			p.mu.Lock()
+			p.log.Printf("Notifying clients\n")
+			p.dispatcher.NotifyClients()
 		}
 	}
 	p.persist.RecentChange = cc.ID

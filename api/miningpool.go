@@ -3,7 +3,6 @@ package api
 import (
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/NebulousLabs/Sia/modules"
 	"github.com/NebulousLabs/Sia/types"
@@ -37,15 +36,15 @@ type (
 		Workers     []PoolWorkerInfo `json:"workers"`
 	}
 	PoolWorkerInfo struct {
-		WorkerName               string    `json:"workername"`
-		LastShareTime            time.Time `json:"lastsharetime"`
-		SharesThisSession        uint64    `json:"sharesthissession"`
-		InvalidSharesThisSession uint64    `json:"invalidsharesthissession"`
-		StaleSharesThisSession   uint64    `json:"stalesharesthissession"`
-		SharesThisBlock          uint64    `json:"sharesthisblock"`
-		InvalidSharesThisBlock   uint64    `json:"invalidsharesthisblock"`
-		StaleSharesThisBlock     uint64    `json:"stalesharesthisblock"`
-		BlocksFound              uint64    `json:"blocksfound"`
+		WorkerName               string  `json:"workername"`
+		LastShareDuration        float64 `json:"lastshareduration"`
+		SharesThisSession        uint64  `json:"sharesthissession"`
+		InvalidSharesThisSession uint64  `json:"invalidsharesthissession"`
+		StaleSharesThisSession   uint64  `json:"stalesharesthissession"`
+		SharesThisBlock          uint64  `json:"sharesthisblock"`
+		InvalidSharesThisBlock   uint64  `json:"invalidsharesthisblock"`
+		StaleSharesThisBlock     uint64  `json:"stalesharesthisblock"`
+		BlocksFound              uint64  `json:"blocksfound"`
 	}
 )
 
@@ -148,8 +147,8 @@ func (api *API) poolGetClientsInfo(w http.ResponseWriter, req *http.Request, _ h
 		var pw []PoolWorkerInfo
 		for _, wn := range c.Workers {
 			worker := PoolWorkerInfo{
-				WorkerName:    wn.WorkerName,
-				LastShareTime: wn.LastShareTime,
+				WorkerName:        wn.WorkerName,
+				LastShareDuration: wn.LastShareDuration,
 			}
 			pw = append(pw, worker)
 		}
@@ -180,7 +179,7 @@ func (api *API) poolGetClientInfo(w http.ResponseWriter, req *http.Request, _ ht
 	for _, wn := range client.Workers {
 		worker := PoolWorkerInfo{
 			WorkerName:               wn.WorkerName,
-			LastShareTime:            wn.LastShareTime,
+			LastShareDuration:        wn.LastShareDuration,
 			SharesThisSession:        wn.SharesThisSession,
 			InvalidSharesThisSession: wn.InvalidSharesThisSession,
 			StaleSharesThisSession:   wn.StaleSharesThisSession,

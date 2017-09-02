@@ -55,7 +55,7 @@ func (p *Pool) managedSubmitBlock(b types.Block) error {
 		return err
 	}
 	if err == modules.ErrBlockUnsolved {
-		p.log.Println("Mined an unsolved block - header submission appears to be incorrect")
+		// p.log.Println("Mined an unsolved block - header submission appears to be incorrect")
 		return err
 	}
 	if err != nil {

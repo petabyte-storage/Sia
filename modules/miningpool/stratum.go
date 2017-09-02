@@ -140,6 +140,7 @@ func (h *Handler) handleStratumSubscribe(m StratumRequestMsg) {
 
 	//	diff := "b4b6693b72a50c7116db18d6497cac52"
 	t, _ := h.p.persist.Target.Difficulty().Uint64()
+	h.log.Debugf("Difficulty: %x\n", t)
 	tb := make([]byte, 8)
 	binary.LittleEndian.PutUint64(tb, t)
 	diff := hex.EncodeToString(tb)
@@ -247,7 +248,11 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	extraNonce2 := p[2]
 	nTime := p[3]
 	nonce := p[4]
-	h.s.CurrentWorker.SetLastShareTime(time.Now())
+	//	h.s.CurrentWorker.SetLastShareTime(time.Now())
+	if h.s.CurrentWorker.checkDiffOnNewShare() {
+		h.sendSetDifficulty(h.s.CurrentWorker.CurrentDifficulty())
+	}
+
 	h.log.Debugln("name = " + name + ", jobID = " + fmt.Sprintf("%X", jobID) + ", extraNonce2 = " + extraNonce2 + ", nTime = " + nTime + ", nonce = " + nonce)
 
 	if h.s.CurrentJob == nil || // job just finished
@@ -273,6 +278,8 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 		return
 	}
 	h.s.CurrentWorker.log.Printf("Share Accepted\n")
+	h.s.CurrentWorker.IncrementSharesThisBlock()
+	h.s.CurrentWorker.IncrementSharesThisSession()
 	b := h.s.CurrentJob.Block // copying the block takes time - of course if it changes right away, this job becomes stale
 	bhNonce, err := hex.DecodeString(nonce)
 	for i := range b.Nonce { // there has to be a better way to do this in golang
@@ -288,40 +295,47 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	cointxn.ArbitraryData[0] = append(cointxn.ArbitraryData[0], ex2...)
 
 	b.Transactions = append(b.Transactions, []types.Transaction{cointxn}...)
-	h.s.CurrentWorker.log.Debugf("BH hash is %064v\n", b.ID())
-	h.s.CurrentWorker.log.Debugf("Target is  %064x\n", h.p.persist.Target.Int())
+
+	h.s.CurrentWorker.log.Printf("BH hash is %064v\n", b.ID())
+	h.s.CurrentWorker.log.Printf("Target is  %064x\n", h.p.persist.Target.Int())
 	blockHash := b.ID()
 	if bytes.Compare(h.p.persist.Target[:], blockHash[:]) >= 0 {
-		h.s.CurrentWorker.log.Debugf("Block is less than target\n")
-		h.s.CurrentWorker.IncrementSharesThisBlock()
-		h.s.CurrentWorker.IncrementSharesThisSession()
+		h.s.CurrentWorker.log.Printf("Block is less than target\n")
 	}
 	err = h.p.managedSubmitBlock(b)
-	if err != nil {
+	if err != nil && err != modules.ErrBlockUnsolved {
 		h.log.Printf("Failed to SubmitBlock(): %v\n", err)
 		r.Result = json.RawMessage(`false`)
 		r.Error = json.RawMessage(`["20","Other/Unknown"]`)
 		h.s.CurrentWorker.IncrementInvalidSharesThisSessin()
 		h.s.CurrentWorker.IncrementInvalidSharesThisBlock()
 		h.sendResponse(r)
-		//		h.sendStratumNotify()
 		return
 	}
-	h.s.CurrentWorker.Parent().log.Printf("Yay!!! Solved a block!!\n")
-	h.s.CurrentWorker.log.Printf("Yay!!! Solved a block!!\n")
-	h.s.CurrentJob = nil
+	if err != modules.ErrBlockUnsolved {
+		h.s.CurrentWorker.Parent().log.Printf("Yay!!! Solved a block!!\n")
+		h.s.CurrentWorker.log.Printf("Yay!!! Solved a block!!\n")
+		h.s.CurrentJob = nil
+		h.s.CurrentWorker.ClearInvalidSharesThisBlock()
+		h.s.CurrentWorker.ClearSharesThisBlock()
+		h.s.CurrentWorker.ClearStaleSharesThisBlock()
+		h.s.CurrentWorker.IncrementBlocksFound()
+	}
 	h.sendResponse(r)
-	h.s.CurrentWorker.ClearInvalidSharesThisBlock()
-	h.s.CurrentWorker.ClearSharesThisBlock()
-	h.s.CurrentWorker.ClearStaleSharesThisBlock()
-	h.s.CurrentWorker.IncrementBlocksFound()
-
-	// h.p.mu.Lock()
-	// h.p.newSourceBlock()
-	// h.p.mu.Unlock()
-
-	//	h.sendStratumNotify()
 }
+
+func (h *Handler) sendSetDifficulty(d float64) {
+	var r StratumRequestMsg
+	r.Method = "mining.set_difficulty"
+	r.ID = 1 // assuming this ID is the response to the original subscribe which appears to be a 1
+	// tb := make([]byte, 8)
+	// d64, _ := d.Uint64()
+	// binary.LittleEndian.PutUint64(tb, d64)
+	// diff := hex.EncodeToString(tb)
+	r.Params = json.RawMessage(fmt.Sprintf("[%f]", d))
+	h.sendRequest(r)
+}
+
 func (h *Handler) sendStratumNotify() {
 	var r StratumRequestMsg
 	r.Method = "mining.notify"
@@ -330,8 +344,8 @@ func (h *Handler) sendStratumNotify() {
 	h.s.addJob(job)
 	jobid := h.s.CurrentJob.printID()
 	h.p.mu.RLock()
-	job.Block = *h.p.sourceBlock // make a copy of the block and hold it until the solution is submitted
-	job.MerkleRoot = h.p.sourceBlock.MerkleRoot()
+	h.s.CurrentJob.Block = *h.p.sourceBlock // make a copy of the block and hold it until the solution is submitted
+	h.s.CurrentJob.MerkleRoot = h.p.sourceBlock.MerkleRoot()
 	h.p.mu.RUnlock()
 	mbranch := crypto.NewTree()
 	var buf bytes.Buffer
@@ -404,7 +418,7 @@ type Dispatcher struct {
 //AddHandler connects the incoming connection to the handler which will handle it
 func (d *Dispatcher) AddHandler(conn net.Conn) {
 	addr := conn.RemoteAddr().String()
-	handler := &Handler{conn, make(chan bool, 1), make(chan bool, 1), d.p, d.log, nil}
+	handler := &Handler{conn, make(chan bool, 2), make(chan bool, 2), d.p, d.log, nil}
 	d.mu.Lock()
 	d.handlers[addr] = handler
 	d.mu.Unlock()
@@ -459,9 +473,9 @@ func (d *Dispatcher) ListenHandlers(port string) {
 }
 
 func (d *Dispatcher) NotifyClients() {
+	d.log.Printf("Notifying %d clients\n", len(d.handlers))
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	d.log.Debugf("Notifying %d clients\n", len(d.handlers))
 	for _, h := range d.handlers {
 		h.notify <- true
 	}

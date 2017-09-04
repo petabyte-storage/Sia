@@ -48,8 +48,10 @@ func (p *Pool) managedSubmitBlock(b types.Block) error {
 	err := p.cs.AcceptBlock(b)
 	// Add the miner to the blocks list if the only problem is that it's stale.
 	if err == modules.ErrNonExtendingBlock {
+		p.log.Debugf("Waiting to lock pool\n")
 		p.mu.Lock()
 		p.persist.BlocksFound = append(p.persist.BlocksFound, b.ID())
+		p.log.Debugf("Unlocking pool\n")
 		p.mu.Unlock()
 		p.log.Println("Mined a stale block - block appears valid but does not extend the blockchain")
 		return err
@@ -63,8 +65,12 @@ func (p *Pool) managedSubmitBlock(b types.Block) error {
 		p.log.Println("ERROR: an invalid block was submitted:", err)
 		return err
 	}
+	p.log.Debugf("Waiting to lock pool\n")
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	defer func() {
+		p.log.Debugf("Unlocking pool\n")
+		p.mu.Unlock()
+	}()
 
 	// Grab a new address for the miner. Call may fail if the wallet is locked
 	// or if the wallet addresses have been exhausted.

@@ -203,8 +203,12 @@ func (p *Pool) deleteMapElementTxns(id splitSetID) {
 
 // ProcessConsensusChange will update the pool's most recent block.
 func (p *Pool) ProcessConsensusChange(cc modules.ConsensusChange) {
+	p.log.Debugf("Waiting to lock pool\n")
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	defer func() {
+		p.log.Debugf("Unlocking pool\n")
+		p.mu.Unlock()
+	}()
 
 	// Update the pool's understanding of the block height.
 	for _, block := range cc.RevertedBlocks {
@@ -254,8 +258,12 @@ func (p *Pool) ProcessConsensusChange(cc modules.ConsensusChange) {
 // ReceiveUpdatedUnconfirmedTransactions will replace the current unconfirmed
 // set of transactions with the input transactions.
 func (p *Pool) ReceiveUpdatedUnconfirmedTransactions(diff *modules.TransactionPoolDiff) {
+	p.log.Debugf("Waiting to lock pool\n")
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	defer func() {
+		p.log.Debugf("Unlocking pool\n")
+		p.mu.Unlock()
+	}()
 
 	p.deleteReverts(diff)
 	p.addNewTxns(diff)

@@ -27,6 +27,7 @@ type Worker struct {
 	sharesThisBlock          uint64
 	invalidSharesThisBlock   uint64
 	staleSharesThisBlock     uint64
+	continuousStaleCount     uint64
 	blocksFound              uint64
 	shareTimes               [numSharesToAverage]float64
 	lastShareSpot            uint64
@@ -217,6 +218,26 @@ func (w *Worker) IncrementStaleSharesThisBlock() {
 	defer w.mu.Unlock()
 	w.staleSharesThisBlock++
 }
+
+func (w *Worker) ContinuousStaleCount() uint64 {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	return w.continuousStaleCount
+}
+
+func (w *Worker) ClearContinuousStaleCount() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.continuousStaleCount = 0
+}
+
+func (w *Worker) IncrementContinuousStaleCount() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.continuousStaleCount++
+}
+
 func (w *Worker) BlocksFound() uint64 {
 	w.mu.RLock()
 	defer w.mu.RUnlock()

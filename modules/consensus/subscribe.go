@@ -4,6 +4,7 @@ import (
 	"github.com/NebulousLabs/Sia/build"
 	"github.com/NebulousLabs/Sia/modules"
 
+	siasync "github.com/NebulousLabs/Sia/sync"
 	"github.com/NebulousLabs/bolt"
 )
 
@@ -120,7 +121,9 @@ func (cs *ConsensusSet) updateSubscribers(ce changeEntry) {
 //
 // As a special case, using an empty id as the start will have all the changes
 // sent to the modules starting with the genesis block.
-func (cs *ConsensusSet) managedInitializeSubscribe(subscriber modules.ConsensusSetSubscriber, start modules.ConsensusChangeID) error {
+func (cs *ConsensusSet) managedInitializeSubscribe(subscriber modules.ConsensusSetSubscriber, start modules.ConsensusChangeID,
+	cancel <-chan struct{}) error {
+
 	if start == modules.ConsensusChangeRecent {
 		return nil
 	}
@@ -169,6 +172,11 @@ func (cs *ConsensusSet) managedInitializeSubscribe(subscriber modules.ConsensusS
 		cs.mu.RLock()
 		err = cs.db.View(func(tx *bolt.Tx) error {
 			for i := 0; i < 100 && exists; i++ {
+				select {
+				case <-cancel:
+					return siasync.ErrStopped
+				default:
+				}
 				cc, err := cs.computeConsensusChange(tx, entry)
 				if err != nil {
 					return err
@@ -182,6 +190,16 @@ func (cs *ConsensusSet) managedInitializeSubscribe(subscriber modules.ConsensusS
 		if err != nil {
 			return err
 		}
+		// Flush DB pages from memory. Caching the pages doesn't improve
+		// performance much anyway, since they are only read once.
+		cs.mu.Lock()
+		err = cs.db.Update(func(tx *bolt.Tx) error {
+			return tx.FlushDBPages()
+		})
+		cs.mu.Unlock()
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -192,7 +210,9 @@ func (cs *ConsensusSet) managedInitializeSubscribe(subscriber modules.ConsensusS
 //
 // As a special case, using an empty id as the start will have all the changes
 // sent to the modules starting with the genesis block.
-func (cs *ConsensusSet) ConsensusSetSubscribe(subscriber modules.ConsensusSetSubscriber, start modules.ConsensusChangeID) error {
+func (cs *ConsensusSet) ConsensusSetSubscribe(subscriber modules.ConsensusSetSubscriber, start modules.ConsensusChangeID,
+	cancel <-chan struct{}) error {
+
 	err := cs.tg.Add()
 	if err != nil {
 		return err
@@ -200,7 +220,7 @@ func (cs *ConsensusSet) ConsensusSetSubscribe(subscriber modules.ConsensusSetSub
 	defer cs.tg.Done()
 
 	// Get the input module caught up to the current consensus set.
-	err = cs.managedInitializeSubscribe(subscriber, start)
+	err = cs.managedInitializeSubscribe(subscriber, start, cancel)
 	if err != nil {
 		return err
 	}
@@ -233,6 +253,10 @@ func (cs *ConsensusSet) Unsubscribe(subscriber modules.ConsensusSetSubscriber) {
 	// found.
 	for i := range cs.subscribers {
 		if cs.subscribers[i] == subscriber {
+			// nil the subscriber entry (otherwise it will not be GC'd if it's
+			// at the end of the subscribers slice).
+			cs.subscribers[i] = nil
+			// Delete the entry from the slice.
 			cs.subscribers = append(cs.subscribers[0:i], cs.subscribers[i+1:]...)
 			break
 		}

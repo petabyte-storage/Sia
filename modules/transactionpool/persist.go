@@ -56,9 +56,15 @@ func (tp *TransactionPool) syncDB() {
 		tp.log.Severe("ERROR: failed to apply database update:", err)
 		tp.dbTx.Rollback()
 	}
+	// Begin a new tx
 	tp.dbTx, err = tp.db.Begin(true)
 	if err != nil {
 		tp.log.Severe("ERROR: failed to initialize a db transaction:", err)
+	}
+	// Flush the cached DB pages from memory
+	err = tp.dbTx.FlushDBPages()
+	if err != nil {
+		tp.log.Severe("ERROR: failed to flush db pages:", err)
 	}
 }
 
@@ -180,7 +186,7 @@ func (tp *TransactionPool) initPersist() error {
 	}
 
 	// Subscribe to the consensus set using the most recent consensus change.
-	err = tp.consensusSet.ConsensusSetSubscribe(tp, cc)
+	err = tp.consensusSet.ConsensusSetSubscribe(tp, cc, tp.tg.StopChan())
 	if err == modules.ErrInvalidConsensusChangeID {
 		tp.log.Println("Invalid consensus change loaded; resetting. This can take a while.")
 		// Reset and rescan because the consensus set does not recognize the
@@ -189,7 +195,7 @@ func (tp *TransactionPool) initPersist() error {
 		if resetErr != nil {
 			return resetErr
 		}
-		freshScanErr := tp.consensusSet.ConsensusSetSubscribe(tp, modules.ConsensusChangeBeginning)
+		freshScanErr := tp.consensusSet.ConsensusSetSubscribe(tp, modules.ConsensusChangeBeginning, tp.tg.StopChan())
 		if freshScanErr != nil {
 			return freshScanErr
 		}

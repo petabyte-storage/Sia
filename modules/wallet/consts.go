@@ -2,7 +2,6 @@ package wallet
 
 import (
 	"github.com/NebulousLabs/Sia/build"
-	"github.com/NebulousLabs/Sia/types"
 )
 
 const (
@@ -35,26 +34,6 @@ var (
 		Testing:  uint64(40),
 	}).(uint64)
 )
-
-// dustValue is the quantity below which a Currency is considered to be Dust.
-//
-// TODO: These need to be functions of the wallet that interact with the
-// transaction pool.
-func dustValue() types.Currency {
-	return types.SiacoinPrecision
-}
-
-// defragFee is the miner fee paid to miners when performing a defrag
-// transaction.
-//
-// TODO: These need to be functions of the wallet that interact with the
-// transaction pool.
-func defragFee() types.Currency {
-	// 35 outputs at an estimated 250 bytes needed per output means about a 10kb
-	// total transaction, much larger than your average transaction. So you need
-	// a lot of fees.
-	return types.SiacoinPrecision.Mul64(10)
-}
 
 func init() {
 	// Sanity check - the defrag threshold needs to be higher than the batch

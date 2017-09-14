@@ -241,7 +241,7 @@ func (p *Pool) startupRescan() error {
 
 	// Subscribe to the consensus set. This is a blocking call that will not
 	// return until the pool has fully caught up to the current block.
-	err = p.cs.ConsensusSetSubscribe(p, modules.ConsensusChangeBeginning)
+	err = p.cs.ConsensusSetSubscribe(p, modules.ConsensusChangeBeginning, p.tg.StopChan())
 	if err != nil {
 		return err
 	}
@@ -337,7 +337,7 @@ func newPool(dependencies dependencies, cs modules.ConsensusSet, tpool modules.T
 			p.log.Println("Could not save pool upon shutdown:", err)
 		}
 	})
-	err = p.cs.ConsensusSetSubscribe(p, p.persist.RecentChange)
+	err = p.cs.ConsensusSetSubscribe(p, p.persist.RecentChange, p.tg.StopChan())
 	if err == modules.ErrInvalidConsensusChangeID {
 		// Perform a rescan of the consensus set if the change id is not found.
 		// The id will only be not found if there has been desynchronization

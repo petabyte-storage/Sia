@@ -168,6 +168,7 @@ type Pool struct {
 	address           types.UnlockHash
 	unsolvedBlock     types.Block
 	clients           map[string]*Client
+	BlocksFound       []*Accounting
 	// Pool transient fields - these fields are either determined at startup or
 	// otherwise are not critical to always be correct.
 	autoAddress          modules.NetAddress // Determined using automatic tooling in network.go
@@ -178,16 +179,17 @@ type Pool struct {
 	connectabilityStatus modules.PoolConnectabilityStatus
 
 	// Utilities.
-	db         *persist.BoltDatabase
-	listener   net.Listener
-	log        *persist.Logger
-	mu         sync.RWMutex
-	persistDir string
-	port       string
-	tg         siasync.ThreadGroup
-	persist    persistence
-	dispatcher *Dispatcher
-	stratumID  uint64
+	db           *persist.BoltDatabase
+	listener     net.Listener
+	log          *persist.Logger
+	mu           sync.RWMutex
+	persistDir   string
+	port         string
+	tg           siasync.ThreadGroup
+	persist      persistence
+	dispatcher   *Dispatcher
+	stratumID    uint64
+	blockCounter uint64
 }
 
 // checkUnlockHash will check that the pool has an unlock hash. If the pool

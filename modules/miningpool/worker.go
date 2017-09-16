@@ -123,7 +123,7 @@ func (w *Worker) ClearSharesThisSession() {
 func (w *Worker) IncrementSharesThisSession() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.sharesThisSession++
+	w.sharesThisSession += uint64(w.currentDifficulty)
 }
 
 func (w *Worker) SharesThisBlock() uint64 {
@@ -142,7 +142,7 @@ func (w *Worker) ClearSharesThisBlock() {
 func (w *Worker) IncrementSharesThisBlock() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.sharesThisBlock++
+	w.sharesThisBlock += uint64(w.currentDifficulty)
 }
 
 func (w *Worker) InvalidSharesThisSession() uint64 {
@@ -161,7 +161,7 @@ func (w *Worker) ClearInvalidSharesThisSession() {
 func (w *Worker) IncrementInvalidSharesThisSessin() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.invalidSharesThisSession++
+	w.invalidSharesThisSession += uint64(w.currentDifficulty)
 }
 
 func (w *Worker) InvalidSharesThisBlock() uint64 {
@@ -180,7 +180,7 @@ func (w *Worker) ClearInvalidSharesThisBlock() {
 func (w *Worker) IncrementInvalidSharesThisBlock() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.invalidSharesThisBlock++
+	w.invalidSharesThisBlock += uint64(w.currentDifficulty)
 }
 
 func (w *Worker) StaleSharesThisSession() uint64 {
@@ -199,7 +199,7 @@ func (w *Worker) ClearStaleSharesThisSession() {
 func (w *Worker) IncrementStaleSharesThisSession() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.staleSharesThisSession++
+	w.staleSharesThisSession += uint64(w.currentDifficulty)
 }
 
 func (w *Worker) StaleSharesThisBlock() uint64 {
@@ -218,7 +218,7 @@ func (w *Worker) ClearStaleSharesThisBlock() {
 func (w *Worker) IncrementStaleSharesThisBlock() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.staleSharesThisBlock++
+	w.staleSharesThisBlock += uint64(w.currentDifficulty)
 }
 
 func (w *Worker) ContinuousStaleCount() uint64 {

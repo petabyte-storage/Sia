@@ -53,6 +53,8 @@ func newWorker(c *Client, name string) (*Worker, error) {
 		staleSharesThisBlock:     0,
 		blocksFound:              0,
 		currentDifficulty:        4.0,
+		lastVardiffRetarget:      time.Now(),
+		lastVardiffTimestamp:     time.Now(),
 	}
 
 	w.vardiff = *w.newVardiff()

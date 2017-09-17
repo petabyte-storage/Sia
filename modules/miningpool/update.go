@@ -268,4 +268,10 @@ func (p *Pool) ReceiveUpdatedUnconfirmedTransactions(diff *modules.TransactionPo
 	p.deleteReverts(diff)
 	p.addNewTxns(diff)
 	p.adjustUnsolvedBlock()
+	p.log.Printf("Unconfirmed transactions change detected\n")
+	p.newSourceBlock()
+	if p.dispatcher != nil {
+		p.log.Printf("Notifying clients\n")
+		p.dispatcher.NotifyClients()
+	}
 }

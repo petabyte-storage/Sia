@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -106,7 +107,12 @@ func (h *Handler) Listen() { // listen connection for incomming data
 		case "mining.subscribe":
 			h.handleStratumSubscribe(m)
 		case "mining.authorize":
-			h.handleStatumAuthorize(m)
+			err = h.handleStatumAuthorize(m)
+			if err != nil {
+				fmt.Printf("Failed to authorize client\n")
+				h.closed <- true // send to dispatcher, that connection is closed
+				return
+			}
 			h.sendStratumNotify()
 		case "mining.extranonce.subscribe":
 			h.handleStratumNonceSubscribe(m)
@@ -175,8 +181,10 @@ func (h *Handler) handleStratumSubscribe(m StratumRequestMsg) {
 // handleStratumAuthorize allows the pool to tie the miner connection to a particular user or wallet
 //
 // TODO: This has to tie to either a connection specific record, or relate to a backend user, worker, password store
-func (h *Handler) handleStatumAuthorize(m StratumRequestMsg) {
+func (h *Handler) handleStatumAuthorize(m StratumRequestMsg) error {
 	type params [2]string
+	var err error
+
 	r := StratumResponseMsg{ID: m.ID}
 
 	r.Result = json.RawMessage(`true`)
@@ -217,8 +225,9 @@ func (h *Handler) handleStatumAuthorize(m StratumRequestMsg) {
 		h.log.Debugln("client = " + client + ", worker = " + worker)
 		if c.Wallet().LoadString(c.Name()) != nil {
 			r.Result = json.RawMessage(`false`)
-			r.Error = json.RawMessage(`{"Client Name must be valid wallet address"}`)
+			r.Error = json.RawMessage(`["Client Name must be valid wallet address"]`)
 			h.log.Println("Client Name must be valid wallet address. Client name is: " + c.Name())
+			err = errors.New("Client name must be a valid wallet address")
 		} else {
 			h.s.addClient(c)
 			h.s.addWorker(c.Worker(worker))
@@ -231,18 +240,20 @@ func (h *Handler) handleStatumAuthorize(m StratumRequestMsg) {
 	default:
 		h.log.Debugln("Unknown stratum method: ", m.Method)
 		r.Result = json.RawMessage(`false`)
+		err = errors.New("Unknown stratum method: " + m.Method)
 	}
 
 	h.sendResponse(r)
+	return err
 }
 
-// handleStratumExtranonceSubscribe tells the pool that this client can handle the extranonce info
+// handleStratumNonceSubscribe tells the pool that this client can handle the extranonce info
 //
 // TODO: Not sure we have to anything if all our clients support this.
 func (h *Handler) handleStratumNonceSubscribe(m StratumRequestMsg) {
 	h.p.log.Debugln("ID = "+strconv.Itoa(m.ID)+", Method = "+m.Method+", params = ", m.Params)
 
-	r := StratumResponseMsg{ID: m.ID}
+	r := StratumResponseMsg{ID: 3} // not sure why 3 is right, but ccminer expects it to be 3
 	r.Result = json.RawMessage(`true`)
 	r.Error = json.RawMessage(`null`)
 
@@ -268,9 +279,23 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	extraNonce2 := p[2]
 	nTime := p[3]
 	nonce := p[4]
+
+	needNewJob := false
+	defer func() {
+		if needNewJob == true {
+			h.sendStratumNotify()
+		}
+	}()
+
+	if h.s.CurrentWorker == nil {
+		// worker failed to authorize
+		h.log.Printf("Worker failed to authorize - dropping\n")
+		return
+	}
 	//	h.s.CurrentWorker.SetLastShareTime(time.Now())
 	if h.s.CurrentWorker.checkDiffOnNewShare() {
 		h.sendSetDifficulty(h.s.CurrentWorker.CurrentDifficulty())
+		needNewJob = true
 	}
 
 	h.log.Debugln("name = " + name + ", jobID = " + fmt.Sprintf("%X", jobID) + ", extraNonce2 = " + extraNonce2 + ", nTime = " + nTime + ", nonce = " + nonce)
@@ -297,7 +322,7 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 		h.sendResponse(r)
 		// seems like we have a race where the miner gets stuck on a stale job
 		if h.s.CurrentWorker.ContinuousStaleCount() > 2 {
-			h.sendStratumNotify()
+			needNewJob = true
 		}
 		// fmt.Printf("%s: %s Handle submit - done - stale\n", time.Now(), h.s.printID())
 
@@ -322,7 +347,7 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	cointxn.ArbitraryData[0] = append(cointxn.ArbitraryData[0], ex2...)
 
 	b.Transactions = append(b.Transactions, []types.Transaction{cointxn}...)
-	h.p.log.Debugf("Waiting to lock pool\n")
+	// h.p.log.Debugf("Waiting to lock pool\n")
 	h.p.mu.Lock()
 	h.s.CurrentWorker.log.Printf("BH hash is %064v\n", b.ID())
 	h.s.CurrentWorker.log.Printf("Target is  %064x\n", h.p.persist.Target.Int())
@@ -330,7 +355,7 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	if bytes.Compare(h.p.persist.Target[:], blockHash[:]) >= 0 {
 		h.s.CurrentWorker.log.Printf("Block is less than target\n")
 	}
-	h.p.log.Debugf("Unlocking pool\n")
+	// h.p.log.Debugf("Unlocking pool\n")
 	h.p.mu.Unlock()
 	err = h.p.managedSubmitBlock(b)
 	if err != nil && err != modules.ErrBlockUnsolved {
@@ -385,11 +410,11 @@ func (h *Handler) sendStratumNotify() {
 	job, _ := newJob(h.p)
 	h.s.addJob(job)
 	jobid := h.s.CurrentJob.printID()
-	h.p.log.Debugf("Waiting to lock pool\n")
+	// h.p.log.Debugf("Waiting to lock pool\n")
 	h.p.mu.Lock()
 	h.s.CurrentJob.Block = *h.p.sourceBlock // make a copy of the block and hold it until the solution is submitted
 	h.s.CurrentJob.MerkleRoot = h.p.sourceBlock.MerkleRoot()
-	h.p.log.Debugf("Unlocking pool\n")
+	// h.p.log.Debugf("Unlocking pool\n")
 	h.p.mu.Unlock()
 	// fmt.Printf("%s: %s Send notify - block copied\n", time.Now(), h.s.printID())
 	mbranch := crypto.NewTree()
@@ -437,8 +462,9 @@ func (h *Handler) sendStratumNotify() {
 	bpm, _ := job.Block.ParentID.MarshalJSON()
 
 	version := ""
-
 	nbits := fmt.Sprintf("%08x", BigToCompact(h.p.persist.Target.Int()))
+	//	nbits := "1a08645a"
+
 	buf.Reset()
 	encoding.WriteUint64(&buf, uint64(job.Block.Timestamp))
 	ntime := hex.EncodeToString(buf.Bytes())
@@ -532,10 +558,10 @@ func (d *Dispatcher) NotifyClients() {
 // for more the unique IDs within the Stratum protocol
 func (p *Pool) newStratumID() (f func() uint64) {
 	f = func() uint64 {
-		p.log.Debugf("Waiting to lock pool\n")
+		// p.log.Debugf("Waiting to lock pool\n")
 		p.mu.Lock()
 		defer func() {
-			p.log.Debugf("Unlocking pool\n")
+			// p.log.Debugf("Unlocking pool\n")
 			p.mu.Unlock()
 		}()
 		atomic.AddUint64(&p.stratumID, 1)

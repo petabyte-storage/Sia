@@ -1,6 +1,8 @@
 package modules
 
 import (
+	"time"
+
 	"github.com/NebulousLabs/Sia/types"
 )
 
@@ -34,15 +36,16 @@ type (
 	}
 
 	PoolWorkers struct {
-		WorkerName               string  `json:"workername"`
-		LastShareDuration        float64 `json:"lastshareduration"`
-		SharesThisSession        uint64  `json:"sharesthissession"`
-		InvalidSharesThisSession uint64  `json:"invalidsharesthissession"`
-		StaleSharesThisSession   uint64  `json:"stalesharesthissession"`
-		SharesThisBlock          uint64  `json:"sharesthisblock"`
-		InvalidSharesThisBlock   uint64  `json:"invalidsharesthisblock"`
-		StaleSharesThisBlock     uint64  `json:"stalesharesthisblock"`
-		BlocksFound              uint64  `json:"blocksfound"`
+		WorkerName               string    `json:"workername"`
+		LastShareDuration        float64   `json:"lastshareduration"`
+		LastShareTime            time.Time `json:"lastsharetime"`
+		SharesThisSession        uint64    `json:"sharesthissession"`
+		InvalidSharesThisSession uint64    `json:"invalidsharesthissession"`
+		StaleSharesThisSession   uint64    `json:"stalesharesthissession"`
+		SharesThisBlock          uint64    `json:"sharesthisblock"`
+		InvalidSharesThisBlock   uint64    `json:"invalidsharesthisblock"`
+		StaleSharesThisBlock     uint64    `json:"stalesharesthisblock"`
+		BlocksFound              uint64    `json:"blocksfound"`
 	}
 
 	// PoolWorkingStatus reports the working state of a pool. Can be one of

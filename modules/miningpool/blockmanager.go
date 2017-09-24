@@ -27,7 +27,7 @@ func (p *Pool) newSourceBlock() {
 	}
 
 	// Update the source block.
-	block := p.persist.UnsolvedBlock
+	block := p.persist.GetUnsolvedBlockPtr()
 
 	// Update the timestamp.
 	if block.Timestamp < types.CurrentTimestamp() {
@@ -36,9 +36,10 @@ func (p *Pool) newSourceBlock() {
 
 	block.MinerPayouts = []types.SiacoinOutput{{
 		Value:      block.CalculateSubsidy(p.persist.BlockHeight + 1),
-		UnlockHash: p.settings.PoolOperatorWallet,
+		UnlockHash: p.persist.GetSettings().PoolOperatorWallet,
 	}}
-	p.sourceBlock = &block
+	p.saveSync()
+	p.sourceBlock = block
 	p.sourceBlockTime = time.Now()
 }
 
@@ -48,10 +49,10 @@ func (p *Pool) managedSubmitBlock(b types.Block) error {
 	err := p.cs.AcceptBlock(b)
 	// Add the miner to the blocks list if the only problem is that it's stale.
 	if err == modules.ErrNonExtendingBlock {
-		p.log.Debugf("Waiting to lock pool\n")
+		// p.log.Debugf("Waiting to lock pool\n")
 		p.mu.Lock()
-		p.persist.BlocksFound = append(p.persist.BlocksFound, b.ID())
-		p.log.Debugf("Unlocking pool\n")
+
+		// p.log.Debugf("Unlocking pool\n")
 		p.mu.Unlock()
 		p.log.Println("Mined a stale block - block appears valid but does not extend the blockchain")
 		return err
@@ -65,16 +66,16 @@ func (p *Pool) managedSubmitBlock(b types.Block) error {
 		p.log.Println("ERROR: an invalid block was submitted:", err)
 		return err
 	}
-	p.log.Debugf("Waiting to lock pool\n")
+	// p.log.Debugf("Waiting to lock pool\n")
 	p.mu.Lock()
 	defer func() {
-		p.log.Debugf("Unlocking pool\n")
+		// p.log.Debugf("Unlocking pool\n")
 		p.mu.Unlock()
 	}()
 
 	// Grab a new address for the miner. Call may fail if the wallet is locked
 	// or if the wallet addresses have been exhausted.
-	p.persist.BlocksFound = append(p.persist.BlocksFound, b.ID())
+	p.persist.SetBlocksFound(append(p.persist.GetBlocksFound(), b.ID()))
 	// var uc types.UnlockConditions
 	// uc, err = p.wallet.NextAddress()
 	// if err != nil {

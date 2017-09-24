@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"sort"
+	"time"
 
 	"github.com/NebulousLabs/Sia/api"
 
@@ -142,11 +144,12 @@ func poolclientscmd() {
 	fmt.Printf("Clients List:\n\n")
 	fmt.Printf("Number of Clients: %d\nNumber of Workers: %d\n\n", clients.NumberOfClients, clients.NumberOfWorkers)
 	fmt.Printf("                         Client Name                                         Blocks Mined\n")
+	sort.Sort(ByClientName(clients.Clients))
 	for _, c := range clients.Clients {
 		fmt.Printf("% 76.76s %d\n", c.ClientName, c.BlocksMined)
 		fmt.Printf("     Worker Name      Last Share Time\n")
 		for _, w := range c.Workers {
-			fmt.Printf(" % -16s     %v\n", w.WorkerName, shareTime(w.LastShareDuration))
+			fmt.Printf(" % -16s     %v\n", w.WorkerName, shareTime(w.LastShareTime))
 		}
 	}
 }
@@ -160,22 +163,43 @@ func poolclientcmd(name string) {
 	fmt.Printf("\nClient Name: % 76.76s\nBlocks Mined: %d\n\n", client.ClientName, client.BlocksMined)
 	fmt.Printf("                    Per Current Block           Per Current Session\n")
 	fmt.Printf("Worker Name         Shares    Stale   Invalid   Shares    Stale   Invalid     Blocks Found   Last Share Time\n")
+	sort.Sort(ByWorkerName(client.Workers))
 	for _, w := range client.Workers {
 		fmt.Printf("% -16s  % 8d % 8d  % 8d % 8d % 8d  % 8d         % 8d   %v\n",
 			w.WorkerName, w.SharesThisBlock, w.StaleSharesThisBlock, w.InvalidSharesThisBlock,
 			w.SharesThisSession, w.StaleSharesThisSession, w.InvalidSharesThisSession, w.BlocksFound,
-			shareTime(w.LastShareDuration))
+			shareTime(w.LastShareTime))
 	}
 
 }
 
-func shareTime(t float64) string {
-	if t == 0 {
+func shareTime(t time.Time) string {
+	if t.IsZero() {
+		return "never"
+	}
+
+	if time.Now().Sub(t).Seconds() < 1 {
 		return "now"
 	}
 
-	switch t {
+	switch {
+	case time.Now().Sub(t).Hours() > 1:
+		return fmt.Sprintf(" %v", t)
+	case time.Now().Sub(t).Minutes() > 1:
+		return fmt.Sprintf(" %.2f minutes ago", time.Now().Sub(t).Minutes())
 	default:
-		return fmt.Sprintf(" %.2f seconds ago", t)
+		return fmt.Sprintf(" %.2f seconds ago", time.Now().Sub(t).Seconds())
 	}
 }
+
+type ByClientName []api.PoolClientInfo
+
+func (a ByClientName) Len() int           { return len(a) }
+func (a ByClientName) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByClientName) Less(i, j int) bool { return a[i].ClientName < a[j].ClientName }
+
+type ByWorkerName []api.PoolWorkerInfo
+
+func (a ByWorkerName) Len() int           { return len(a) }
+func (a ByWorkerName) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByWorkerName) Less(i, j int) bool { return a[i].WorkerName < a[j].WorkerName }

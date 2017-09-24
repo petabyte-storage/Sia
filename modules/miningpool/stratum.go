@@ -113,14 +113,14 @@ func (h *Handler) Listen() { // listen connection for incomming data
 				h.closed <- true // send to dispatcher, that connection is closed
 				return
 			}
-			h.sendStratumNotify()
+			h.sendStratumNotify(true)
 		case "mining.extranonce.subscribe":
 			h.handleStratumNonceSubscribe(m)
 		case "mining.submit":
 			h.handleStratumSubmit(m)
 		case "mining.notify":
 			h.log.Printf("New block to mine on\n")
-			h.sendStratumNotify()
+			h.sendStratumNotify(true)
 		default:
 			h.log.Debugln("Unknown stratum method: ", m.Method)
 		}
@@ -283,7 +283,7 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	needNewJob := false
 	defer func() {
 		if needNewJob == true {
-			h.sendStratumNotify()
+			h.sendStratumNotify(false)
 		}
 	}()
 
@@ -292,7 +292,6 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 		h.log.Printf("Worker failed to authorize - dropping\n")
 		return
 	}
-	//	h.s.CurrentWorker.SetLastShareTime(time.Now())
 	if h.s.CurrentWorker.checkDiffOnNewShare() {
 		h.sendSetDifficulty(h.s.CurrentWorker.CurrentDifficulty())
 		needNewJob = true
@@ -300,39 +299,29 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 
 	h.log.Debugln("name = " + name + ", jobID = " + fmt.Sprintf("%X", jobID) + ", extraNonce2 = " + extraNonce2 + ", nTime = " + nTime + ", nonce = " + nonce)
 
-	if h.s.CurrentJob == nil || // job just finished
-		h.s.CurrentJob.JobID != jobID || // job is old/stale
-		h.p.sourceBlock.MerkleRoot() != h.s.CurrentJob.MerkleRoot { //block changed since job started
-		if h.s.CurrentJob == nil {
-			r.Error = json.RawMessage(`["21","Stale - Job just finished"]`)
-			h.s.CurrentWorker.log.Printf("Stale Share rejected - Job just finished\n")
-		} else if h.s.CurrentJob.JobID != jobID {
-			r.Error = json.RawMessage(`["21","Stale - old/unknown job"]`)
-			h.s.CurrentWorker.log.Printf("Stale Share rejected - old/unknown job\n")
-		} else if h.p.sourceBlock.MerkleRoot() != h.s.CurrentJob.MerkleRoot {
-			r.Error = json.RawMessage(`["21","Stale - block changed"]`)
-			h.s.CurrentWorker.log.Printf("Stale Share rejected - block changed\n")
-		}
-		r.Result = json.RawMessage(`false`)
-		h.s.CurrentWorker.IncrementInvalidSharesThisSessin()
-		h.s.CurrentWorker.IncrementInvalidSharesThisBlock()
-		h.s.CurrentWorker.IncrementStaleSharesThisSession()
-		h.s.CurrentWorker.IncrementStaleSharesThisBlock()
-		h.s.CurrentWorker.IncrementContinuousStaleCount()
-		h.sendResponse(r)
-		// seems like we have a race where the miner gets stuck on a stale job
-		if h.s.CurrentWorker.ContinuousStaleCount() > 2 {
-			needNewJob = true
-		}
-		// fmt.Printf("%s: %s Handle submit - done - stale\n", time.Now(), h.s.printID())
-
-		return
-	}
 	h.s.CurrentWorker.log.Printf("Share Accepted\n")
 	h.s.CurrentWorker.ClearContinuousStaleCount()
 	h.s.CurrentWorker.IncrementSharesThisBlock()
 	h.s.CurrentWorker.IncrementSharesThisSession()
-	b := h.s.CurrentJob.Block // copying the block takes time - of course if it changes right away, this job becomes stale
+	h.s.CurrentWorker.SetLastShareTime(time.Now())
+
+	var b *types.Block
+	for _, j := range h.s.CurrentJobs {
+		if jobID == j.JobID {
+			b = &j.Block
+		}
+	}
+	if b == nil {
+		r.Error = json.RawMessage(`["21","Stale - old/unknown job"]`)
+		h.s.CurrentWorker.log.Printf("Stale Share rejected - old/unknown job\n")
+		h.s.CurrentWorker.IncrementStaleSharesThisSession()
+		h.s.CurrentWorker.IncrementStaleSharesThisBlock()
+		h.s.CurrentWorker.IncrementInvalidSharesThisSessin()
+		h.s.CurrentWorker.IncrementInvalidSharesThisBlock()
+		h.sendResponse(r)
+		return
+	}
+
 	bhNonce, err := hex.DecodeString(nonce)
 	for i := range b.Nonce { // there has to be a better way to do this in golang
 		b.Nonce[i] = bhNonce[i]
@@ -347,21 +336,22 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	cointxn.ArbitraryData[0] = append(cointxn.ArbitraryData[0], ex2...)
 
 	b.Transactions = append(b.Transactions, []types.Transaction{cointxn}...)
-	// h.p.log.Debugf("Waiting to lock pool\n")
-	h.p.mu.Lock()
-	h.s.CurrentWorker.log.Printf("BH hash is %064v\n", b.ID())
-	h.s.CurrentWorker.log.Printf("Target is  %064x\n", h.p.persist.Target.Int())
 	blockHash := b.ID()
-	if bytes.Compare(h.p.persist.Target[:], blockHash[:]) >= 0 {
-		h.s.CurrentWorker.log.Printf("Block is less than target\n")
+	t := h.p.persist.GetTarget()
+	h.s.CurrentWorker.log.Printf("BH hash is %064v\n", blockHash)
+	h.s.CurrentWorker.log.Printf("Target is  %064x\n", t.Int())
+	if bytes.Compare(t[:], blockHash[:]) < 0 {
+		h.s.CurrentWorker.log.Printf("Block is greater than target\n")
+		h.sendResponse(r)
+		return
 	}
-	// h.p.log.Debugf("Unlocking pool\n")
-	h.p.mu.Unlock()
-	err = h.p.managedSubmitBlock(b)
+	err = h.p.managedSubmitBlock(*b)
 	if err != nil && err != modules.ErrBlockUnsolved {
 		h.log.Printf("Failed to SubmitBlock(): %v\n", err)
 		r.Result = json.RawMessage(`false`)
-		r.Error = json.RawMessage(`["20","Other/Unknown"]`)
+		r.Error = json.RawMessage(`["20","Stale share"]`)
+		h.s.CurrentWorker.IncrementStaleSharesThisSession()
+		h.s.CurrentWorker.IncrementStaleSharesThisBlock()
 		h.s.CurrentWorker.IncrementInvalidSharesThisSessin()
 		h.s.CurrentWorker.IncrementInvalidSharesThisBlock()
 		h.sendResponse(r)
@@ -371,7 +361,7 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	if err != modules.ErrBlockUnsolved {
 		h.s.CurrentWorker.Parent().log.Printf("Yay!!! Solved a block!!\n")
 		h.s.CurrentWorker.log.Printf("Yay!!! Solved a block!!\n")
-		h.s.CurrentJob = nil
+		h.s.CurrentJobs = nil
 		ac, _ := newAccounting(h.p, b.ID())
 		for _, cl := range h.p.clients {
 			for _, w := range cl.workers {
@@ -394,29 +384,20 @@ func (h *Handler) sendSetDifficulty(d float64) {
 	var r StratumRequestMsg
 	r.Method = "mining.set_difficulty"
 	r.ID = 1 // assuming this ID is the response to the original subscribe which appears to be a 1
-	// tb := make([]byte, 8)
-	// d64, _ := d.Uint64()
-	// binary.LittleEndian.PutUint64(tb, d64)
-	// diff := hex.EncodeToString(tb)
 	r.Params = json.RawMessage(fmt.Sprintf("[%f]", d))
 	h.sendRequest(r)
 }
 
-func (h *Handler) sendStratumNotify() {
+func (h *Handler) sendStratumNotify(cleanJobs bool) {
 	var r StratumRequestMsg
 	r.Method = "mining.notify"
 	// fmt.Printf("%s: %s Send notify\n", time.Now(), h.s.printID())
 	r.ID = 1 // assuming this ID is the response to the original subscribe which appears to be a 1
 	job, _ := newJob(h.p)
 	h.s.addJob(job)
-	jobid := h.s.CurrentJob.printID()
-	// h.p.log.Debugf("Waiting to lock pool\n")
-	h.p.mu.Lock()
-	h.s.CurrentJob.Block = *h.p.sourceBlock // make a copy of the block and hold it until the solution is submitted
-	h.s.CurrentJob.MerkleRoot = h.p.sourceBlock.MerkleRoot()
-	// h.p.log.Debugf("Unlocking pool\n")
-	h.p.mu.Unlock()
-	// fmt.Printf("%s: %s Send notify - block copied\n", time.Now(), h.s.printID())
+	jobid := job.printID()
+	job.Block = h.p.persist.GetCopyUnsolvedBlock() // make a copy of the block and hold it until the solution is submitted
+	job.MerkleRoot = job.Block.MerkleRoot()
 	mbranch := crypto.NewTree()
 	var buf bytes.Buffer
 	for _, payout := range job.Block.MinerPayouts {
@@ -469,7 +450,6 @@ func (h *Handler) sendStratumNotify() {
 	encoding.WriteUint64(&buf, uint64(job.Block.Timestamp))
 	ntime := hex.EncodeToString(buf.Bytes())
 
-	cleanJobs := true
 	raw := fmt.Sprintf(`[ "%s", %s, "%s", "%s", %s, "%s", "%s", "%s", %t ]`,
 		jobid, string(bpm), h.p.coinB1Txn(), h.p.coinB2(), mbj, version, nbits, ntime, cleanJobs)
 	r.Params = json.RawMessage(raw)

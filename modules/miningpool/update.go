@@ -1,6 +1,8 @@
 package pool
 
 import (
+	"time"
+
 	"github.com/NebulousLabs/Sia/modules"
 	"github.com/NebulousLabs/Sia/types"
 )
@@ -203,10 +205,10 @@ func (p *Pool) deleteMapElementTxns(id splitSetID) {
 
 // ProcessConsensusChange will update the pool's most recent block.
 func (p *Pool) ProcessConsensusChange(cc modules.ConsensusChange) {
-	p.log.Debugf("Waiting to lock pool\n")
+	// p.log.Debugf("Waiting to lock pool\n")
 	p.mu.Lock()
 	defer func() {
-		p.log.Debugf("Unlocking pool\n")
+		// p.log.Debugf("Unlocking pool\n")
 		p.mu.Unlock()
 	}()
 
@@ -214,34 +216,35 @@ func (p *Pool) ProcessConsensusChange(cc modules.ConsensusChange) {
 	for _, block := range cc.RevertedBlocks {
 		// Only doing the block check if the height is above zero saves hashing
 		// and saves a nontrivial amount of time during IBD.
-		if p.persist.BlockHeight > 0 || block.ID() != types.GenesisID {
-			p.persist.BlockHeight--
-		} else if p.persist.BlockHeight != 0 {
+		if p.persist.GetBlockHeight() > 0 || block.ID() != types.GenesisID {
+			p.persist.SetBlockHeight(p.persist.GetBlockHeight() - 1)
+		} else if p.persist.GetBlockHeight() != 0 {
 			// Sanity check - if the current block is the genesis block, the
 			// pool height should be set to zero.
-			p.log.Critical("Pool has detected a genesis block, but the height of the pool is set to ", p.persist.BlockHeight)
-			p.persist.BlockHeight = 0
+			p.log.Critical("Pool has detected a genesis block, but the height of the pool is set to ", p.persist.GetBlockHeight())
+			p.persist.SetBlockHeight(0)
 		}
 	}
 	for _, block := range cc.AppliedBlocks {
 		// Only doing the block check if the height is above zero saves hashing
 		// and saves a nontrivial amount of time during IBD.
-		if p.persist.BlockHeight > 0 || block.ID() != types.GenesisID {
-			p.persist.BlockHeight++
-		} else if p.persist.BlockHeight != 0 {
+		if p.persist.GetBlockHeight() > 0 || block.ID() != types.GenesisID {
+			p.persist.SetBlockHeight(p.persist.GetBlockHeight() + 1)
+		} else if p.persist.GetBlockHeight() != 0 {
 			// Sanity check - if the current block is the genesis block, the
 			// pool height should be set to zero.
-			p.log.Critical("Pool has detected a genesis block, but the height of the pool is set to ", p.persist.BlockHeight)
-			p.persist.BlockHeight = 0
+			p.log.Critical("Pool has detected a genesis block, but the height of the pool is set to ", p.persist.GetBlockHeight())
+			p.persist.SetBlockHeight(0)
 		}
 	}
 
 	// Update the unsolved block.
+	p.persist.mu.Lock()
 	p.persist.UnsolvedBlock.ParentID = cc.AppliedBlocks[len(cc.AppliedBlocks)-1].ID()
 	p.persist.Target = cc.ChildTarget
 	p.persist.UnsolvedBlock.Timestamp = cc.MinimumValidChildTimestamp
 	p.persist.RecentChange = cc.ID
-
+	p.persist.mu.Unlock()
 	// There is a new parent block, the source block should be updated to keep
 	// the stale rate as low as possible.
 	if cc.Synced {
@@ -252,26 +255,28 @@ func (p *Pool) ProcessConsensusChange(cc modules.ConsensusChange) {
 			p.dispatcher.NotifyClients()
 		}
 	}
-	p.persist.RecentChange = cc.ID
 }
 
 // ReceiveUpdatedUnconfirmedTransactions will replace the current unconfirmed
 // set of transactions with the input transactions.
 func (p *Pool) ReceiveUpdatedUnconfirmedTransactions(diff *modules.TransactionPoolDiff) {
-	p.log.Debugf("Waiting to lock pool\n")
+	// p.log.Debugf("Waiting to lock pool\n")
 	p.mu.Lock()
 	defer func() {
-		p.log.Debugf("Unlocking pool\n")
+		// p.log.Debugf("Unlocking pool\n")
 		p.mu.Unlock()
 	}()
 
 	p.deleteReverts(diff)
 	p.addNewTxns(diff)
 	p.adjustUnsolvedBlock()
-	p.log.Printf("Unconfirmed transactions change detected\n")
-	p.newSourceBlock()
-	if p.dispatcher != nil {
-		p.log.Printf("Notifying clients\n")
-		p.dispatcher.NotifyClients()
+	since := time.Now().Sub(p.sourceBlockTime).Seconds()
+	if since > 30 {
+		p.log.Printf("Block update detected\n")
+		p.newSourceBlock()
+		if p.dispatcher != nil {
+			p.log.Printf("Notifying clients\n")
+			p.dispatcher.NotifyClients()
+		}
 	}
 }

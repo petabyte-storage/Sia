@@ -127,27 +127,6 @@ type Pool struct {
 	setCounter      int
 	splitSets       map[splitSetID]*splitSet
 
-	// RPC Metrics - atomic variables need to be placed at the top to preserve
-	// compatibility with 32bit systems. These values are not persistent.
-	atomicDownloadCalls       uint64
-	atomicErroredCalls        uint64
-	atomicFormContractCalls   uint64
-	atomicRenewCalls          uint64
-	atomicReviseCalls         uint64
-	atomicRecentRevisionCalls uint64
-	atomicSettingsCalls       uint64
-	atomicUnrecognizedCalls   uint64
-
-	// Error management. There are a few different types of errors returned by
-	// the pool. These errors intentionally not persistent, so that the logging
-	// limits of each error type will be reset each time the pool is reset.
-	// These values are not persistent.
-	atomicCommunicationErrors uint64
-	atomicConnectionErrors    uint64
-	atomicConsensusErrors     uint64
-	atomicInternalErrors      uint64
-	atomicNormalErrors        uint64
-
 	// Dependencies.
 	cs     modules.ConsensusSet
 	tpool  modules.TransactionPool
@@ -157,24 +136,12 @@ type Pool struct {
 
 	// Pool ACID fields - these fields need to be updated in serial, ACID
 	// transactions.
-	announced         bool
 	announceConfirmed bool
-	blockHeight       types.BlockHeight
-	publicKey         types.SiaPublicKey
 	secretKey         crypto.SecretKey
-	recentChange      modules.ConsensusChangeID
-	unlockHash        types.UnlockHash // A wallet address that can receive coins.
-	target            types.Target
-	address           types.UnlockHash
-	unsolvedBlock     types.Block
 	clients           map[string]*Client
 	BlocksFound       []*Accounting
 	// Pool transient fields - these fields are either determined at startup or
 	// otherwise are not critical to always be correct.
-	autoAddress          modules.NetAddress // Determined using automatic tooling in network.go
-	miningMetrics        modules.PoolMiningMetrics
-	settings             modules.PoolInternalSettings
-	revisionNumber       uint64
 	workingStatus        modules.PoolWorkingStatus
 	connectabilityStatus modules.PoolConnectabilityStatus
 
@@ -197,7 +164,7 @@ type Pool struct {
 // from the wallet. That may fail due to the wallet being locked, in which case
 // an error is returned.
 func (p *Pool) checkUnlockHash() error {
-	if p.unlockHash == (types.UnlockHash{}) {
+	if p.persist.GetUnlockHash() == (types.UnlockHash{}) {
 		uc, err := p.wallet.NextAddress()
 		if err != nil {
 			return err
@@ -206,7 +173,7 @@ func (p *Pool) checkUnlockHash() error {
 		// Set the unlock hash and save the pool. Saving is important, because
 		// the pool will be using this unlock hash to establish identity, and
 		// losing it will mean silently losing part of the pool identity.
-		p.unlockHash = uc.UnlockHash()
+		p.persist.SetUnlockHash(uc.UnlockHash())
 		err = p.saveSync()
 		if err != nil {
 			return err
@@ -224,17 +191,17 @@ func (p *Pool) startupRescan() error {
 	// operations are wrapped by an anonymous function so that the locking can
 	// be handled using a defer statement.
 	err := func() error {
-		p.log.Debugf("Waiting to lock pool\n")
+		//		p.log.Debugf("Waiting to lock pool\n")
 		p.mu.Lock()
 		defer func() {
-			p.log.Debugf("Unlocking pool\n")
+			//			p.log.Debugf("Unlocking pool\n")
 			p.mu.Unlock()
 		}()
 
 		p.log.Println("Performing a pool rescan.")
-		p.persist.RecentChange = modules.ConsensusChangeBeginning
-		p.persist.BlockHeight = 0
-		p.persist.Target = types.Target{}
+		p.persist.SetRecentChange(modules.ConsensusChangeBeginning)
+		p.persist.SetBlockHeight(0)
+		p.persist.SetTarget(types.Target{})
 		return p.saveSync()
 	}()
 	if err != nil {
@@ -333,6 +300,7 @@ func newPool(dependencies dependencies, cs modules.ConsensusSet, tpool modules.T
 	if err != nil {
 		return nil, err
 	}
+
 	p.tg.AfterStop(func() {
 		err = p.saveSync()
 		if err != nil {
@@ -420,14 +388,12 @@ func (p *Pool) ConnectabilityStatus() modules.PoolConnectabilityStatus {
 // MiningMetrics returns information about the financial commitments,
 // rewards, and activities of the pool.
 func (p *Pool) MiningMetrics() modules.PoolMiningMetrics {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
 	err := p.tg.Add()
 	if err != nil {
 		build.Critical("Call to MiningMetrics after close")
 	}
 	defer p.tg.Done()
-	return p.miningMetrics
+	return p.persist.GetMiningMetrics()
 }
 
 // SetInternalSettings updates the pool's internal PoolInternalSettings object.
@@ -453,8 +419,8 @@ func (p *Pool) SetInternalSettings(settings modules.PoolInternalSettings) error 
 		}
 	}
 
-	p.settings = settings
-	p.revisionNumber++
+	p.persist.SetSettings(settings)
+	p.persist.SetRevisionNumber(p.persist.GetRevisionNumber() + 1)
 
 	err = p.saveSync()
 	if err != nil {
@@ -465,14 +431,7 @@ func (p *Pool) SetInternalSettings(settings modules.PoolInternalSettings) error 
 
 // InternalSettings returns the settings of a pool.
 func (p *Pool) InternalSettings() modules.PoolInternalSettings {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	err := p.tg.Add()
-	if err != nil {
-		return modules.PoolInternalSettings{}
-	}
-	defer p.tg.Done()
-	return p.settings
+	return p.persist.GetSettings()
 }
 
 func (p *Pool) AddClient(c *Client) {
@@ -505,6 +464,7 @@ func (p *Pool) FindClient(name string) *modules.PoolClients {
 			worker := modules.PoolWorkers{
 				WorkerName:               wn,
 				LastShareDuration:        w.LastShareDuration(),
+				LastShareTime:            w.LastShareTime(),
 				SharesThisSession:        w.SharesThisSession(),
 				InvalidSharesThisSession: w.InvalidSharesThisSession(),
 				StaleSharesThisSession:   w.StaleSharesThisSession(),
@@ -535,6 +495,7 @@ func (p *Pool) ClientData() []modules.PoolClients {
 			worker := modules.PoolWorkers{
 				WorkerName:               wn,
 				LastShareDuration:        w.LastShareDuration(),
+				LastShareTime:            w.LastShareTime(),
 				SharesThisSession:        w.SharesThisSession(),
 				InvalidSharesThisSession: w.InvalidSharesThisSession(),
 				StaleSharesThisSession:   w.StaleSharesThisSession(),

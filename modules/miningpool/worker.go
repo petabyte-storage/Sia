@@ -17,10 +17,11 @@ const (
 // is a one to many client worker relationship
 //
 type Worker struct {
-	mu                       sync.RWMutex
-	workerID                 uint64
-	name                     string
-	parent                   *Client
+	mu       sync.RWMutex
+	workerID uint64
+	name     string
+	parent   *Client
+	// stats
 	sharesThisSession        uint64
 	invalidSharesThisSession uint64
 	staleSharesThisSession   uint64
@@ -29,13 +30,16 @@ type Worker struct {
 	staleSharesThisBlock     uint64
 	continuousStaleCount     uint64
 	blocksFound              uint64
-	shareTimes               [numSharesToAverage]float64
-	lastShareSpot            uint64
-	currentDifficulty        float64
-	vardiff                  Vardiff
-	log                      *persist.Logger
-	lastVardiffRetarget      time.Time
-	lastVardiffTimestamp     time.Time
+	lastShareTime            time.Time
+	// vardiff
+	currentDifficulty    float64
+	vardiff              Vardiff
+	lastShareSpot        uint64
+	shareTimes           [numSharesToAverage]float64
+	lastVardiffRetarget  time.Time
+	lastVardiffTimestamp time.Time
+	// utility
+	log *persist.Logger
 }
 
 func newWorker(c *Client, name string) (*Worker, error) {
@@ -257,6 +261,19 @@ func (w *Worker) IncrementBlocksFound() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.blocksFound++
+}
+
+func (w *Worker) SetLastShareTime(t time.Time) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.lastShareTime = t
+}
+
+func (w *Worker) LastShareTime() time.Time {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	return w.lastShareTime
 }
 
 func (w *Worker) LastShareDuration() float64 {

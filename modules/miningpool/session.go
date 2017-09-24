@@ -11,7 +11,7 @@ import (
 //
 type Session struct {
 	SessionID     uint64
-	CurrentJob    *Job
+	CurrentJobs   []*Job
 	Client        *Client
 	CurrentWorker *Worker
 	ExtraNonce1   uint32
@@ -35,7 +35,7 @@ func (s *Session) addWorker(w *Worker) {
 }
 
 func (s *Session) addJob(j *Job) {
-	s.CurrentJob = j
+	s.CurrentJobs = append(s.CurrentJobs, j)
 }
 
 func (s *Session) printID() string {

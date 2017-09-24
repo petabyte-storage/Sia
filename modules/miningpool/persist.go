@@ -3,6 +3,7 @@ package pool
 import (
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/NebulousLabs/Sia/build"
 	"github.com/NebulousLabs/Sia/modules"
@@ -14,6 +15,8 @@ import (
 
 // persistence is the data that is kept when the pool is restarted.
 type persistence struct {
+	mu sync.RWMutex
+
 	// Consensus Tracking.
 	BlockHeight  types.BlockHeight         `json:"blockheight"`
 	RecentChange modules.ConsensusChangeID `json:"recentchange"`
@@ -28,32 +31,178 @@ type persistence struct {
 	UnlockHash     types.UnlockHash             `json:"unlockhash"`
 
 	// Block info
-	Target        types.Target     `json:"blocktarget"`
-	Address       types.UnlockHash `json:"pooladdress"`
-	BlocksFound   []types.BlockID
-	UnsolvedBlock types.Block `json:"unsolvedblock"`
+	Target types.Target `json:"blocktarget"`
+	// Address       types.UnlockHash `json:"pooladdress"`
+	BlocksFound   []types.BlockID `json:"blocksfound"`
+	UnsolvedBlock types.Block     `json:"unsolvedblock"`
 }
 
-// persistData returns the data in the Pool that will be saved to disk.
+func (p *persistence) GetBlockHeight() types.BlockHeight {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.BlockHeight
+}
+
+func (p *persistence) SetBlockHeight(bh types.BlockHeight) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.BlockHeight = bh
+}
+
+func (p *persistence) GetRecentChange() modules.ConsensusChangeID {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.RecentChange
+}
+
+func (p *persistence) SetRecentChange(rc modules.ConsensusChangeID) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.RecentChange = rc
+}
+
+func (p *persistence) GetAnnounced() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.Announced
+}
+
+func (p *persistence) SetAnnounced(an bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Announced = an
+}
+
+func (p *persistence) GetAutoAddress() modules.NetAddress {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.AutoAddress
+}
+
+func (p *persistence) SetAutoAddress(aa modules.NetAddress) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.AutoAddress = aa
+}
+
+func (p *persistence) GetMiningMetrics() modules.PoolMiningMetrics {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.MiningMetrics
+}
+
+func (p *persistence) SetMiningMetrics(mm modules.PoolMiningMetrics) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.MiningMetrics = mm
+}
+
+func (p *persistence) GetPublicKey() types.SiaPublicKey {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.PublicKey
+}
+
+func (p *persistence) SetPublicKey(pk types.SiaPublicKey) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.PublicKey = pk
+}
+
+func (p *persistence) GetRevisionNumber() uint64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.RevisionNumber
+}
+
+func (p *persistence) SetRevisionNumber(rn uint64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.RevisionNumber = rn
+}
+
+func (p *persistence) GetSettings() modules.PoolInternalSettings {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.Settings
+}
+
+func (p *persistence) SetSettings(s modules.PoolInternalSettings) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Settings = s
+}
+
+func (p *persistence) GetUnlockHash() types.UnlockHash {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.UnlockHash
+}
+
+func (p *persistence) SetUnlockHash(h types.UnlockHash) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.UnlockHash = h
+}
+
+func (p *persistence) GetTarget() types.Target {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.Target
+}
+
+func (p *persistence) SetTarget(t types.Target) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Target = t
+}
+
+func (p *persistence) GetBlocksFound() []types.BlockID {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.BlocksFound
+}
+
+func (p *persistence) SetBlocksFound(bf []types.BlockID) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.BlocksFound = bf
+}
+
+func (p *persistence) GetCopyUnsolvedBlock() types.Block {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.UnsolvedBlock
+}
+
+// TODO: don't like this approach - needs to be resolved differently
+func (p *persistence) GetUnsolvedBlockPtr() *types.Block {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return &p.UnsolvedBlock
+}
+
+func (p *persistence) SetUnsolvedBlock(ub types.Block) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.UnsolvedBlock = ub
+}
+
+// persistData returns a copy of the data in the Pool that will be saved to disk.
 func (mp *Pool) persistData() persistence {
 	return persistence{
-		// Consensus Tracking.
-		BlockHeight:  mp.blockHeight,
-		RecentChange: mp.recentChange,
-
-		// Pool Identity.
-		Announced:      mp.announced,
-		AutoAddress:    mp.autoAddress,
-		MiningMetrics:  mp.miningMetrics,
-		PublicKey:      mp.publicKey,
-		RevisionNumber: mp.revisionNumber,
-		Settings:       mp.settings,
-		UnlockHash:     mp.unlockHash,
-
-		// Block info
-		Target:        mp.target,
-		Address:       mp.address,
-		UnsolvedBlock: mp.unsolvedBlock,
+		BlockHeight:    mp.persist.GetBlockHeight(),
+		RecentChange:   mp.persist.GetRecentChange(),
+		Announced:      mp.persist.GetAnnounced(),
+		AutoAddress:    mp.persist.GetAutoAddress(),
+		MiningMetrics:  mp.persist.GetMiningMetrics(),
+		PublicKey:      mp.persist.GetPublicKey(),
+		RevisionNumber: mp.persist.GetRevisionNumber(),
+		Settings:       mp.persist.GetSettings(),
+		UnlockHash:     mp.persist.GetUnlockHash(),
+		Target:         mp.persist.GetTarget(),
+		BlocksFound:    mp.persist.GetBlocksFound(),
+		UnsolvedBlock:  mp.persist.GetCopyUnsolvedBlock(),
 	}
 }
 
@@ -61,14 +210,14 @@ func (mp *Pool) persistData() persistence {
 // any existing settings.
 func (mp *Pool) establishDefaults() error {
 	// Configure the settings object.
-	mp.settings = modules.PoolInternalSettings{
+	mp.persist.SetSettings(modules.PoolInternalSettings{
 		PoolName:               "",
 		AcceptingShares:        false,
 		PoolOperatorPercentage: 0.0,
 		PoolOperatorWallet:     types.UnlockHash{},
 		PoolNetworkPort:        3333,
-	}
-
+	})
+	mp.newSourceBlock()
 	return nil
 }
 
@@ -76,21 +225,24 @@ func (mp *Pool) establishDefaults() error {
 // host.
 func (mp *Pool) loadPersistObject(p *persistence) {
 	// Copy over consensus tracking.
-	mp.blockHeight = p.BlockHeight
-	mp.recentChange = p.RecentChange
+	mp.persist.SetBlockHeight(p.GetBlockHeight())
+	mp.persist.SetRecentChange(p.GetRecentChange())
 
 	// Copy over host identity.
-	mp.announced = p.Announced
-	mp.autoAddress = p.AutoAddress
-	if err := p.AutoAddress.IsValid(); err != nil {
+	mp.persist.SetAnnounced(p.GetAnnounced())
+	mp.persist.SetAutoAddress(p.GetAutoAddress())
+	if err := p.GetAutoAddress().IsValid(); err != nil {
 		mp.log.Printf("WARN: AutoAddress '%v' loaded from persist is invalid: %v", p.AutoAddress, err)
-		mp.autoAddress = ""
+		p.SetAutoAddress("")
 	}
-	mp.miningMetrics = p.MiningMetrics
-	mp.publicKey = p.PublicKey
-	mp.revisionNumber = p.RevisionNumber
-	mp.settings = p.Settings
-	mp.unlockHash = p.UnlockHash
+	mp.persist.SetMiningMetrics(p.GetMiningMetrics())
+	mp.persist.SetPublicKey(p.GetPublicKey())
+	mp.persist.SetRevisionNumber(p.GetRevisionNumber())
+	mp.persist.SetSettings(p.GetSettings())
+	mp.persist.SetUnlockHash(p.GetUnlockHash())
+	mp.persist.SetTarget(p.GetTarget())
+	mp.persist.SetBlocksFound(p.GetBlocksFound())
+	mp.persist.SetUnsolvedBlock(p.GetCopyUnsolvedBlock())
 }
 
 // initDB will check that the database has been initialized and if not, will

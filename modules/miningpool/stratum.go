@@ -305,13 +305,13 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	h.s.CurrentWorker.IncrementSharesThisSession()
 	h.s.CurrentWorker.SetLastShareTime(time.Now())
 
-	var b *types.Block
+	var b types.Block
 	for _, j := range h.s.CurrentJobs {
 		if jobID == j.JobID {
-			b = &j.Block
+			b = j.Block
 		}
 	}
-	if b == nil {
+	if len(b.MinerPayouts) == 0 {
 		r.Error = json.RawMessage(`["21","Stale - old/unknown job"]`)
 		h.s.CurrentWorker.log.Printf("Stale Share rejected - old/unknown job\n")
 		h.s.CurrentWorker.IncrementStaleSharesThisSession()
@@ -337,15 +337,16 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 
 	b.Transactions = append(b.Transactions, []types.Transaction{cointxn}...)
 	blockHash := b.ID()
+	bh := new(big.Int).SetBytes(blockHash[:])
 	t := h.p.persist.GetTarget()
-	h.s.CurrentWorker.log.Printf("BH hash is %064v\n", blockHash)
+	h.s.CurrentWorker.log.Printf("BH hash is %064x\n", bh)
 	h.s.CurrentWorker.log.Printf("Target is  %064x\n", t.Int())
 	if bytes.Compare(t[:], blockHash[:]) < 0 {
 		h.s.CurrentWorker.log.Printf("Block is greater than target\n")
 		h.sendResponse(r)
 		return
 	}
-	err = h.p.managedSubmitBlock(*b)
+	err = h.p.managedSubmitBlock(b)
 	if err != nil && err != modules.ErrBlockUnsolved {
 		h.log.Printf("Failed to SubmitBlock(): %v\n", err)
 		r.Result = json.RawMessage(`false`)

@@ -101,7 +101,7 @@ Pool Name:              %s
 Pool Accepting Shares   %t
 Pool Stratum Port       %d
 Operator Percentage     %.02f %%
-Operator Wallet:        %s`,
+Operator Wallet:        %s\n`,
 		poolStr, status.PoolHashrate/1000000000, status.BlocksMined,
 		config.Name, config.AcceptingShares, config.NetworkPort, config.OperatorPercentage, config.OperatorWallet)
 }

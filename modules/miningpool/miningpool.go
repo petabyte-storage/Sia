@@ -435,10 +435,10 @@ func (p *Pool) InternalSettings() modules.PoolInternalSettings {
 }
 
 func (p *Pool) AddClient(c *Client) {
-	p.log.Debugf("Waiting to lock pool\n")
+	//	p.log.Debugf("Waiting to lock pool\n")
 	p.mu.Lock()
 	defer func() {
-		p.log.Debugf("Unlocking pool\n")
+		//		p.log.Debugf("Unlocking pool\n")
 		p.mu.Unlock()
 	}()
 

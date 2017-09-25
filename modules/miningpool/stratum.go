@@ -308,7 +308,7 @@ func (h *Handler) handleStratumSubmit(m StratumRequestMsg) {
 	var b types.Block
 	for _, j := range h.s.CurrentJobs {
 		if jobID == j.JobID {
-			b = j.Block
+			b = j.Block // copy so the j.Block is not disturbed
 		}
 	}
 	if len(b.MinerPayouts) == 0 {
@@ -393,7 +393,7 @@ func (h *Handler) sendStratumNotify(cleanJobs bool) {
 	var r StratumRequestMsg
 	r.Method = "mining.notify"
 	// fmt.Printf("%s: %s Send notify\n", time.Now(), h.s.printID())
-	r.ID = 1 // assuming this ID is the response to the original subscribe which appears to be a 1
+	r.ID = 0 // gominer requires notify to use an id of 0
 	job, _ := newJob(h.p)
 	h.s.addJob(job)
 	jobid := job.printID()

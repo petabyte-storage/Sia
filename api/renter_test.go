@@ -1978,7 +1978,12 @@ func TestExhaustedContracts(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = build.Retry(100, time.Millisecond*500, func() error {
-		// mine blocks each iteration to trigger contract maintainence
+		// mine blocks each iteration to trigger contract maintenance
+		_, err = st.miner.AddBlock()
+		if err != nil {
+			t.Fatal(err)
+		}
+
 		st.miner.AddBlock()
 		if !st.renter.FileList()[0].Available {
 			return errors.New("file did not complete uploading")
@@ -2073,8 +2078,11 @@ func TestAdversarialPriceRenewal(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = build.Retry(100, time.Millisecond*500, func() error {
-		// mine blocks each iteration to trigger contract maintainence
-		st.miner.AddBlock()
+		// mine blocks each iteration to trigger contract maintenance
+		_, err = st.miner.AddBlock()
+		if err != nil {
+			t.Fatal(err)
+		}
 		if !st.renter.FileList()[0].Available {
 			return errors.New("file did not complete uploading")
 		}
@@ -2098,7 +2106,10 @@ func TestAdversarialPriceRenewal(t *testing.T) {
 	}
 
 	for i := 0; i < 100; i++ {
-		st.miner.AddBlock()
+		_, err = st.miner.AddBlock()
+		if err != nil {
+			t.Fatal(err)
+		}
 		if st.renter.Contracts()[0].LastRevision.NewRevisionNumber != initialRevision {
 			t.Fatal("changing host price caused renew")
 		}
